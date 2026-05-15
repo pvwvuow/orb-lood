@@ -2365,9 +2365,9 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 /* ============== TASK BAR / NAV ============== */
 
-.taskbar{height:calc(50px + env(safe-area-inset-bottom, 0px));display:flex;align-items:center;justify-content:space-between;padding:6px 12px;padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px));background:radial-gradient(ellipse at 50% 0%,rgba(91,33,182,0.14),transparent 65%),rgba(0,0,0,0.32);border-top:1px solid var(--tint-3);flex-shrink:0;position:relative;overflow:visible}
+.taskbar{height:calc(50px + env(safe-area-inset-bottom, 0px));display:flex;align-items:center;justify-content:space-between;padding:6px 12px;padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px));background:radial-gradient(ellipse at 50% 0%,rgba(91,33,182,0.14),transparent 65%),rgba(0,0,0,0.32);border-top:1px solid var(--tint-3);flex-shrink:0;position:relative;overflow:visible;gap:6px}
 
-.taskbar-left{display:flex;align-items:center;gap:10px}
+.taskbar-left{display:flex;align-items:center;gap:10px;flex-shrink:0}
 
 .tb-logo{display:none}
 
@@ -2378,7 +2378,7 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 .tb-clock:hover{background:var(--tint-3)}
 
-.taskbar-mid{display:flex;gap:4px}
+.taskbar-mid{display:flex;gap:4px;flex-shrink:1;min-width:0}
 
 .tb{display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:10px;font-size:0.7rem;color:var(--t3);transition:all 0.2s;position:relative}
 
@@ -2390,7 +2390,7 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 .tb-badge{position:absolute;top:3px;right:5px;background:var(--danger);color:white;font-size:0.45rem;padding:1px 4px;border-radius:6px;min-width:14px;text-align:center;font-weight:700;font-family:'Space Mono','Vazirmatn',monospace}
 
-.taskbar-right{display:flex;align-items:center;gap:6px}
+.taskbar-right{display:flex;align-items:center;gap:6px;flex-shrink:0}
 
 .tb-right-btn{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--t3);transition:all 0.2s;position:relative}
 
@@ -2400,7 +2400,7 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 .tb-right-dot{position:absolute;top:5px;right:5px;width:7px;height:7px;border-radius:50%;background:var(--danger);border:1.5px solid var(--bg)}
 
-.tb-avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#22c55e,#15803d);display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:600;cursor:pointer;color:white;border:1.5px solid var(--tint-5);transition:transform 0.2s;background-size:cover;background-position:center;overflow:hidden}
+.tb-avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#22c55e,#15803d);display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:600;cursor:pointer;color:white;border:1.5px solid var(--tint-5);transition:transform 0.2s;background-size:cover;background-position:center;overflow:hidden;flex-shrink:0}
 
 .tb-avatar:hover{transform:scale(1.08)}
 
@@ -4082,7 +4082,16 @@ select.sm-input option{background:var(--panel);color:var(--t1);padding:6px 10px}
 
   .members-sidebar.open{width:200px}
 
-  /* Hide version label on mobile so the avatar icon isn't pushed off-screen */
+  /* Tighten taskbar on small screens so the avatar always stays on-screen.
+     The mid section (DMs/HOME/WORLD) shrinks/scrolls if needed instead of
+     pushing the right side off-screen. */
+  .taskbar{padding:6px 8px;padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px));gap:4px}
+  .tb{padding:6px 8px;font-size:0.65rem}
+  .tb span{display:inline}
+  .taskbar-mid{overflow:hidden}
+
+  /* Version label was already hidden via DOM removal but keep this rule
+     defensively so any older cached HTML still hides it. */
   .tb-version{display:none !important}
 
 }
