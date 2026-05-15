@@ -9971,7 +9971,7 @@
 
     const peers = new Map();    // peerName → { pc, audioEl, polite }
 
-    let iceServers = [{ urls: ['stun:stun.l.google.com:19302'] }];
+    let iceServers = [];
 
     async function loadIceConfig(){
 

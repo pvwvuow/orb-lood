@@ -37,8 +37,11 @@ export const config = {
   },
 
   voice: {
-    username: process.env.EXPRESSTURN_USERNAME || '',
-    password: process.env.EXPRESSTURN_PASSWORD || '',
-    urls: (process.env.EXPRESSTURN_URLS || '').split(',').map(s => s.trim()).filter(Boolean)
+    username: process.env.TURN_USERNAME || process.env.EXPRESSTURN_USERNAME || '',
+    password: process.env.TURN_PASSWORD || process.env.EXPRESSTURN_PASSWORD || '',
+    urls: (process.env.TURN_URLS || process.env.EXPRESSTURN_URLS || '').split(',').map(s => s.trim()).filter(Boolean),
+    // If set, this is used as the hostname for the self-hosted coturn.
+    // If empty, the hostname is derived from PUBLIC_ORIGIN.
+    selfHost: process.env.TURN_HOST || ''
   }
 };
