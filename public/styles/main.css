@@ -2345,13 +2345,13 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 /* ============== TASK BAR / NAV ============== */
 
-.taskbar{height:50px;display:flex;align-items:center;justify-content:space-between;padding:6px 12px;background:radial-gradient(ellipse at 50% 0%,rgba(91,33,182,0.14),transparent 65%),rgba(0,0,0,0.32);border-top:1px solid var(--tint-3);flex-shrink:0;position:relative;overflow:hidden}
+.taskbar{height:calc(50px + env(safe-area-inset-bottom, 0px));display:flex;align-items:center;justify-content:space-between;padding:6px 12px;padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px));background:radial-gradient(ellipse at 50% 0%,rgba(91,33,182,0.14),transparent 65%),rgba(0,0,0,0.32);border-top:1px solid var(--tint-3);flex-shrink:0;position:relative;overflow:visible}
 
 .taskbar-left{display:flex;align-items:center;gap:10px}
 
 .tb-logo{display:none}
 
-.orb-col-fab-inline{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:none;align-items:center;justify-content:center;color:white;cursor:pointer;box-shadow:0 4px 12px var(--brand-glow-strong);border:none;transition:transform 0.15s}
+.orb-col-fab-inline{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:none;align-items:center;justify-content:center;color:white;cursor:pointer;box-shadow:0 4px 12px var(--brand-glow-strong);border:none;transition:transform 0.15s}
 .orb-col-fab-inline:active{transform:scale(0.92)}
 
 .tb-clock{font-family:'Space Mono','Vazirmatn',monospace;font-size:0.7rem;color:var(--t2);letter-spacing:1px;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background 0.2s}
@@ -4051,7 +4051,6 @@ select.sm-input option{background:var(--panel);color:var(--t1);padding:6px 10px}
   /* Orbits FAB: show inline in taskbar instead of floating */
   .orb-col-fab{display:none !important}
   .orb-col-fab-inline{display:flex}
-
   /* Settings: stack sidebar on top of content */
   #profileModal.is-editing .profile-edit{flex-direction:column !important;overflow-y:auto}
   .settings-side{width:100% !important;flex-direction:row !important;flex-wrap:wrap;border-right:none !important;border-bottom:1px solid var(--gb);padding:8px !important;gap:4px !important;overflow-x:auto;overflow-y:visible}
@@ -4063,6 +4062,22 @@ select.sm-input option{background:var(--panel);color:var(--t1);padding:6px 10px}
 
   .members-sidebar.open{width:200px}
 
+}
+
+/* ---- PWA standalone mode ----
+   When the app is installed as a PWA (standalone), ensure no browser
+   chrome leaks through, the taskbar has proper safe-area padding,
+   and the layout fills the full viewport correctly. */
+@media (display-mode: standalone) {
+  html,body{overflow:hidden;position:fixed;width:100%;height:100%}
+  .device-frame{width:100vw;height:100vh;height:100dvh;border-radius:0}
+  .app.glass-panel{border-radius:0;border:none}
+  .taskbar{padding-left:max(12px, env(safe-area-inset-left, 0px));padding-right:max(12px, env(safe-area-inset-right, 0px))}
+  .page-header{padding-top:env(safe-area-inset-top, 0px)}
+}
+
+@media (display-mode: standalone) and (max-width:560px) {
+  .orb-col-fab-inline{display:flex}
 }
 
 

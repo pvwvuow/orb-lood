@@ -13,7 +13,7 @@
 
   // bundle or the fresh one.
 
-  console.log('[orblood] client build 2026-05-16-c (fix voice + UI fixes for PWA)');
+  console.log('[orblood] client build 2026-05-16-d (hotfix: PWA bar, DMs, WS stability)');
 
   // Mobile orbit drawer removed per user request.
 
@@ -7614,7 +7614,7 @@
 
   function _writeToken(t){ try { if (t) localStorage.setItem(BACKEND_TOKEN_KEY, t); else localStorage.removeItem(BACKEND_TOKEN_KEY); } catch(_){} }
 
-  async function _apiRequest(method, path, body){
+  async function _apiRequest(method, path, body, _retryCount){
 
     const base = _backendBase();
 
@@ -7636,6 +7636,12 @@
 
       return { offline:true, error:e };
 
+    }
+
+    // Retry once on 502/503 (backend restart / nginx hiccup) for safe methods
+    if ((res.status === 502 || res.status === 503) && (!_retryCount || _retryCount < 1)) {
+      await new Promise(r => setTimeout(r, 1500));
+      return _apiRequest(method, path, body, (_retryCount||0) + 1);
     }
 
     let data = null;
@@ -8160,6 +8166,16 @@
 
     if (_ws && (_ws.readyState === 0 || _ws.readyState === 1)) return;
 
+    // Validate token hasn't expired before attempting connection.
+    // JWT payload is base64url-encoded in the second segment.
+    try {
+      const payload = JSON.parse(atob(tok.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+      if (payload.exp && payload.exp * 1000 < Date.now()) {
+        console.warn('[orblood] ws token expired, skipping connect');
+        return;
+      }
+    } catch(_){ /* non-standard token, proceed anyway */ }
+
     try { _ws = new WebSocket(url + '?token=' + encodeURIComponent(tok)); }
 
     catch (e){ console.warn('[orblood] ws connect failed', e); _scheduleWsRetry(); return; }
@@ -8249,6 +8265,30 @@
     }
 
   }
+
+  // Visibility change: reconnect WebSocket when tab becomes visible again.
+  // Mobile browsers (especially in PWA mode) aggressively kill ws connections
+  // when the app is backgrounded. When the user returns, we immediately try
+  // to reconnect rather than waiting for the backoff timer.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      // If ws is dead or closing, reconnect immediately
+      if (!_ws || _ws.readyState >= 2) {
+        if (_wsTimer) { clearTimeout(_wsTimer); _wsTimer = null; }
+        _wsRetry = 0;
+        connectRealtime();
+      }
+    }
+  });
+
+  // Online/offline: when the device regains network, try reconnecting
+  window.addEventListener('online', () => {
+    if (!_ws || _ws.readyState >= 2) {
+      if (_wsTimer) { clearTimeout(_wsTimer); _wsTimer = null; }
+      _wsRetry = 0;
+      connectRealtime();
+    }
+  });
 
   // ============== WS PING (server RTT for the orb HUD) ==============
 
@@ -16817,11 +16857,19 @@
     if (pageId === 'pageMessages' && !currentConversation){
 
       // On mobile/PWA, show the conversation list first (don't auto-open).
-      // On desktop, auto-open the first conversation as before.
+      // On desktop, auto-open the first real conversation (skip 'saved' as it's just notes).
       const isMobile = window.innerWidth <= 560;
       if (!isMobile) {
-        const firstKey = Object.keys(conversations)[0];
-        if (firstKey) openConversation(firstKey);
+        // Find the first non-saved conversation with actual content
+        const realKeys = Object.keys(conversations).filter(k => k !== 'saved');
+        const firstKey = realKeys[0] || null;
+        if (firstKey) {
+          openConversation(firstKey);
+        } else {
+          // No real conversations — hide the empty "awaiting signal" and just
+          // show the list side which has the contact list / search
+          document.getElementById('dmEmpty').style.display = 'none';
+        }
       } else {
         // Ensure we're showing the list view
         const dmPane = document.querySelector('.dm-pane');
@@ -16954,7 +17002,40 @@
 
   document.querySelectorAll('.tb[data-page]').forEach(b => { b.addEventListener('click', () => setPage(b.dataset.page)); });
 
-  // Inline orbits FAB removed per user request.
+  // Inline orbits FAB — opens the orb drawer on mobile/PWA.
+  (function(){
+    const fab = document.getElementById('orbColFabInline');
+    if (fab) {
+      fab.addEventListener('click', function(){
+        const col = document.getElementById('orbCol');
+        const scrim = document.getElementById('orbColScrim');
+        if (!col) return;
+        const isOpen = col.classList.contains('open');
+        col.classList.toggle('open', !isOpen);
+        if (scrim) scrim.classList.toggle('show', !isOpen);
+      });
+    }
+    // Scrim click closes the drawer
+    const scrim = document.getElementById('orbColScrim');
+    if (scrim) {
+      scrim.addEventListener('click', function(){
+        const col = document.getElementById('orbCol');
+        if (col) col.classList.remove('open');
+        scrim.classList.remove('show');
+      });
+    }
+    // Escape key closes the drawer
+    document.addEventListener('keydown', function(e){
+      if (e.key === 'Escape') {
+        const col = document.getElementById('orbCol');
+        const scrim = document.getElementById('orbColScrim');
+        if (col && col.classList.contains('open')) {
+          col.classList.remove('open');
+          if (scrim) scrim.classList.remove('show');
+        }
+      }
+    });
+  })();
 
   // DM back button — returns to conversation list on mobile
   (function(){
