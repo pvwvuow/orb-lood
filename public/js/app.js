@@ -13,7 +13,7 @@
 
   // bundle or the fresh one.
 
-  console.log('[orblood] client build 2026-05-16-e (hotfix: PWA install, DMs, voice, UI)');
+  console.log('[orblood] client build 2026-05-16-f (hotfix: DM switch, settings btn, voice diag, PWA bar)');
 
   // Mobile orbit drawer removed per user request.
 
@@ -2318,37 +2318,37 @@
 
     invalidateDmCache(key);
 
-    if (backend.isConfigured() && key){
+    // Drop any "preview" placeholders we seeded from snap.messagePreviews —
+    // those are 1-message stubs that look like real history but aren't, and
+    // rendering them on every switch was producing the "stale chat from the
+    // last person you talked to" bug when conversations[k] had a leftover
+    // preview row from the snapshot. The backend.dms.list call below is the
+    // real source of truth; drop previews so the loading spinner shows
+    // until the real history arrives.
+    if (messages[key] && messages[key].length){
+      const onlyPreviews = messages[key].every(m => m && m._preview);
+      if (onlyPreviews) messages[key] = [];
+    }
 
-      // Always render what we have locally FIRST (instant feedback), then
-      // re-fetch from backend to ensure we have the latest messages.
-      // This fixes the bug where switching between DM contacts showed
-      // stale messages from the previous conversation.
+    if (backend.isConfigured() && key && key !== 'saved'){
 
-      const localMsgs = messages[key] || [];
+      // Always show the loading spinner first. Even if messages[key] has
+      // entries, those may be stale from a prior session or a snapshot
+      // preview that was overwritten when the user sent a new message in
+      // a *different* conversation. The backend round-trip below fills in
+      // the real history within a few hundred ms; the spinner makes the
+      // switch feel instant and avoids the "previous chat is showing"
+      // perception when the cached array happens to carry stale rows.
 
-      if (localMsgs.length === 0){
+      _msgsEl.innerHTML = '<div class="dm-loading-thread">'
+        + '<div class="dm-loading-spinner"></div>'
+        + '<div class="dm-loading-text">Loading messages...</div>'
+        + '</div>';
 
-        // Show a loading indicator while history is being fetched.
-        // Previously this showed "NEW TRANSMISSION" which made the user
-        // think there were no messages even while the fetch was in flight.
-        // We show the spinner regardless of _historyFetched because the
-        // backend re-fetch always fires and will resolve to the real state.
-
-        _msgsEl.innerHTML = '<div class="dm-loading-thread">'
-          + '<div class="dm-loading-spinner"></div>'
-          + '<div class="dm-loading-text">Loading messages...</div>'
-          + '</div>';
-
-      } else {
-
-        // We have some local messages (preview from snapshot) — render them
-
-        // while the full history loads in the background.
-
-        renderConversation();
-
-      }
+      // Reset the historyFetched flag for THIS key so the fetch path below
+      // always runs (don't let a stale flag from a previous session skip
+      // the network call). The flag will be re-set after the fetch resolves.
+      if (conversations[key]) conversations[key]._historyFetched = false;
 
     } else {
 
