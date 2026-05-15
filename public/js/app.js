@@ -13,7 +13,7 @@
 
   // bundle or the fresh one.
 
-  console.log('[orblood] client build 2026-05-15-v3 (cache-bust CDN, WebRTC glare prevention, bio save fix, bcryptjs, local Lucide icons, web refresh/download buttons)');
+  console.log('[orblood] client build 2026-05-16-a (self-hosted TURN for Iran, version badge)');
 
   // Mobile-only: wire the FAB + scrim to slide the orbits drawer in / out.
 
