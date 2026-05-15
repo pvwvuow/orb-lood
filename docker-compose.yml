@@ -29,18 +29,22 @@ services:
       DB_HOST: db
       DB_PORT: 3306
       DB_USER: orblood
-      DB_PASSWORD: changeme
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
       DB_NAME: orblood
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       PORT: 4000
-      # PUBLIC_ORIGIN: set this to the URL users open in their browser.
-      # Examples:
-      #   http://localhost:8080          (local docker-compose)
-      #   https://your-domain.com        (production)
-      # Wildcard "*" trusts any origin (fine for private/demo setups).
-      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-*}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://orblood.ir}
       UPLOAD_DIR: /data/uploads
       PUBLIC_UPLOADS_BASE: /uploads
+      # Voice / TURN — self-hosted coturn on orblood.ir
+      TURN_HOST: ${TURN_HOST:-orblood.ir}
+      TURN_USERNAME: ${TURN_USERNAME:-orblood}
+      TURN_PASSWORD: ${TURN_PASSWORD:-orblood}
+      TURN_URLS: ${TURN_URLS:-turn:orblood.ir:3478,turn:orblood.ir:3478?transport=tcp,turns:orblood.ir:5349}
+      # Legacy vars (still read by config.js as fallback)
+      EXPRESSTURN_USERNAME: ${EXPRESSTURN_USERNAME:-}
+      EXPRESSTURN_PASSWORD: ${EXPRESSTURN_PASSWORD:-}
+      EXPRESSTURN_URLS: ${EXPRESSTURN_URLS:-}
     volumes:
       - uploads:/data/uploads
     ports:
