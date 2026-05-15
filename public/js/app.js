@@ -22684,7 +22684,14 @@
   });
 
   document.getElementById('homeHeroSettings').addEventListener('click', () => {
+    // Open the user's profile modal AND drop into the settings sidebar
+    // (same view that's reached via avatar → profile → "Edit profile").
+    // Without enterProfileEdit() the modal opens in read-only view mode
+    // and the user has to take an extra click to reach Settings — which
+    // was the "button doesn't do anything useful" complaint.
     openProfile(null);
+    try { enterProfileEdit(); } catch(_){}
+    try { setSettingsTab('profile'); } catch(_){}
   });
 
   refreshIcons();
