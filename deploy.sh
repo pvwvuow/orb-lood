@@ -90,10 +90,15 @@ if [ -n "$ENV_BAK" ] && [ -f "$ENV_BAK" ]; then
   ok ".env restored"
 else
   # No existing .env — create from secrets if available
+  # Hardcoded fallback JWT_SECRET so tokens never become invalid after deploy
+  _FALLBACK_JWT_SECRET="74db701819379bb479431f7ea2669d0d02c4b980b7bf54adc64eb59b59bfbe9bf7745ad3c0265547092457749d710d64"
+
   if [ -f /etc/orblood/secrets.env ]; then
     say "No existing .env found — generating from /etc/orblood/secrets.env"
     # shellcheck disable=SC1091
     . /etc/orblood/secrets.env
+    # Use secrets.env value if present, otherwise use the hardcoded fallback
+    JWT_SECRET="${JWT_SECRET:-$_FALLBACK_JWT_SECRET}"
     cat > "$INSTALL_DIR/server/.env" <<EOF
 DB_HOST=127.0.0.1
 DB_PORT=3306
@@ -112,9 +117,24 @@ TURN_URLS=turn:$DOMAIN:443?transport=udp,turn:$DOMAIN:443?transport=tcp,turn:$DO
 EOF
     ok ".env generated from secrets"
   else
-    warn "No .env found and no /etc/orblood/secrets.env — you must create .env manually!"
-    cp "$INSTALL_DIR/server/.env.example" "$INSTALL_DIR/server/.env"
-    warn "Copied .env.example → .env — EDIT IT before starting!"
+    warn "No .env found and no /etc/orblood/secrets.env — generating with defaults"
+    cat > "$INSTALL_DIR/server/.env" <<EOF
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=orblood
+DB_PASSWORD=changeme
+DB_NAME=orblood
+JWT_SECRET=$_FALLBACK_JWT_SECRET
+JWT_EXPIRES_IN=7d
+PORT=4000
+PUBLIC_ORIGIN=https://$DOMAIN
+UPLOAD_DIR=./uploads
+PUBLIC_UPLOADS_BASE=/uploads
+TURN_USERNAME=orblood
+TURN_PASSWORD=
+TURN_URLS=turn:$DOMAIN:443?transport=udp,turn:$DOMAIN:443?transport=tcp,turn:$DOMAIN:3478?transport=udp,turn:$DOMAIN:3478?transport=tcp
+EOF
+    warn ".env generated with fallback JWT_SECRET — update DB_PASSWORD if needed!"
   fi
 fi
 
