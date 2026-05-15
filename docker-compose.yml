@@ -33,7 +33,12 @@ services:
       DB_NAME: orblood
       JWT_SECRET: ${JWT_SECRET:-change-me-in-prod}
       PORT: 4000
-      PUBLIC_ORIGIN: http://localhost:8080
+      # PUBLIC_ORIGIN: set this to the URL users open in their browser.
+      # Examples:
+      #   http://localhost:8080          (local docker-compose)
+      #   https://your-domain.com        (production)
+      # Wildcard "*" trusts any origin (fine for private/demo setups).
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-*}
       UPLOAD_DIR: /data/uploads
       PUBLIC_UPLOADS_BASE: /uploads
     volumes:
