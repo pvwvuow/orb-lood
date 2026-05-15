@@ -906,6 +906,12 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 .home-hero-toggle{position:absolute;top:10px;right:10px;width:28px;height:28px;border-radius:8px;background:rgba(0,0,0,0.45);border:1px solid var(--gb);color:var(--t2);display:flex;align-items:center;justify-content:center;z-index:3;cursor:pointer;transition:all 0.15s}
 
+.home-hero-settings{position:absolute;top:10px;right:44px;width:28px;height:28px;border-radius:8px;background:rgba(0,0,0,0.45);border:1px solid var(--gb);color:var(--t2);display:flex;align-items:center;justify-content:center;z-index:3;cursor:pointer;transition:all 0.15s}
+
+.home-hero-settings:hover{background:rgba(0,0,0,0.7);color:var(--t1);border-color:var(--brand-glow)}
+
+.home-hero.has-identity .home-hero-settings{color:var(--accent);border-color:rgba(185,28,74,0.5)}
+
 .home-hero-toggle:hover{background:rgba(0,0,0,0.7);color:var(--t1);border-color:var(--brand-glow)}
 
 .home-hero.has-identity .home-hero-toggle{color:var(--accent);border-color:rgba(185,28,74,0.5)}
@@ -4077,7 +4083,7 @@ select.sm-input option{background:var(--panel);color:var(--t1);padding:6px 10px}
   .members-sidebar.open{width:200px}
 
   /* Hide version label on mobile so the avatar icon isn't pushed off-screen */
-  .tb-version{display:none}
+  .tb-version{display:none !important}
 
 }
 
@@ -4092,6 +4098,14 @@ select.sm-input option{background:var(--panel);color:var(--t1);padding:6px 10px}
   .taskbar{padding-left:max(12px, env(safe-area-inset-left, 0px));padding-right:max(12px, env(safe-area-inset-right, 0px));padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px))}
   .page-header{padding-top:env(safe-area-inset-top, 0px)}
   /* Hide version label in PWA so avatar icon stays visible */
+  .tb-version{display:none !important}
+}
+
+@media (display-mode: minimal-ui) {
+  .tb-version{display:none !important}
+}
+
+@media (display-mode: fullscreen) {
   .tb-version{display:none !important}
 }
 

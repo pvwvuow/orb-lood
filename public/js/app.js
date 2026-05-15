@@ -551,11 +551,27 @@
 
     if (dmListOrder.length) return;
 
-    // Build a default order from current conversation keys (saved first).
+    // Build a default order sorted by most recent message (newest first).
+    // Uses messagePreviews seeded from the snapshot to determine recency.
+    const keys = Object.keys(conversations).filter(k => k !== 'saved');
 
-    const keys = Object.keys(conversations);
+    // Sort by last message timestamp (most recent first). If a conversation
+    // has no messages yet, it goes to the bottom.
+    keys.sort((a, b) => {
+      const msgsA = messages[a] || [];
+      const msgsB = messages[b] || [];
+      const lastA = msgsA.length ? msgsA[msgsA.length - 1] : null;
+      const lastB = msgsB.length ? msgsB[msgsB.length - 1] : null;
+      const timeA = lastA ? (lastA.createdAt || lastA.time || '') : '';
+      const timeB = lastB ? (lastB.createdAt || lastB.time || '') : '';
+      if (!timeA && !timeB) return 0;
+      if (!timeA) return 1;
+      if (!timeB) return -1;
+      // Compare as strings (ISO dates) or date objects — descending
+      return timeB > timeA ? 1 : timeB < timeA ? -1 : 0;
+    });
 
-    dmListOrder = ['saved', ...keys.filter(k => k !== 'saved')];
+    dmListOrder = ['saved', ...keys];
 
   }
 
@@ -2302,7 +2318,7 @@
 
     invalidateDmCache(key);
 
-    if (backend.isConfigured() && key && key !== 'saved'){
+    if (backend.isConfigured() && key){
 
       // Always render what we have locally FIRST (instant feedback), then
       // re-fetch from backend to ensure we have the latest messages.
@@ -2483,12 +2499,6 @@
         }
 
       });
-
-    } else if (conv._historyFetched) {
-
-      // History already fetched in this session; the synchronous render
-
-      // above used the cached messages[k]. Nothing else to do.
 
     } else {
 
@@ -8143,6 +8153,11 @@
     if (Array.isArray(snap.markedTextChannels)) markedTextChannels = snap.markedTextChannels.slice();
 
     if (Array.isArray(snap.marked))       marked = snap.marked.slice();
+
+    // Use server-provided DM list order (sorted by most recent message)
+    if (Array.isArray(snap.dmListOrder) && snap.dmListOrder.length){
+      dmListOrder = snap.dmListOrder.slice();
+    }
 
     // Drop a stale localStorage 'lastJoined' if we no longer belong to its
 
@@ -22666,6 +22681,10 @@
 
     showToast(next ? 'Profile preview enabled' : 'Profile preview hidden','success');
 
+  });
+
+  document.getElementById('homeHeroSettings').addEventListener('click', () => {
+    openProfile(null);
   });
 
   refreshIcons();

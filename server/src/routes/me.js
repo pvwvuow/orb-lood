@@ -320,6 +320,7 @@ meRouter.get('/snapshot', async (req, res, next) => {
         id: r.mid,
         sender,
         text: r.body || '',
+        createdAt: new Date(r.created_at).toISOString(),
         time: new Date(r.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         day:  new Date(r.created_at).toLocaleDateString().toUpperCase(),
         deleted: !!r.deleted,
@@ -452,6 +453,17 @@ meRouter.get('/snapshot', async (req, res, next) => {
       `SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`,
       [me.id]);
 
+    // Build DM list ordering sorted by most recent message (newest first)
+    const dmListOrder = [];
+    const previewsSorted = previewRows
+      .filter(r => r.mid && r.created_at)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    const seenOrder = new Set();
+    previewsSorted.forEach(r => {
+      const k = r.is_saved ? 'saved' : peerHandleByUid.get(r.user_a === me.id ? r.user_b : r.user_a);
+      if (k && !seenOrder.has(k)){ dmListOrder.push(k); seenOrder.add(k); }
+    });
+
     res.json({
       user: publicUser(me),
       servers,
@@ -460,6 +472,7 @@ meRouter.get('/snapshot', async (req, res, next) => {
       conversations,
       messages: { saved: [] }, // DM threads loaded lazily per-thread
       messagePreviews,         // last message per DM thread for sidebar previews
+      dmListOrder,             // conversations sorted by most recent message
       dmPinned,                // peerHandle -> message id pinned on that thread
       unreadDm,
       unreadChannels,
