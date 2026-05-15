@@ -1310,6 +1310,9 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 .dm-conv{display:flex;flex-direction:column;height:100%;min-height:0;background:radial-gradient(ellipse at 50% 0%,rgba(185,28,74,0.06),transparent 60%),radial-gradient(ellipse at 80% 100%,rgba(190,18,60,0.04),transparent 60%);position:relative}
 
+.dm-back-btn{display:none;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;background:var(--tint-3);border:1px solid var(--gb);color:var(--t2);cursor:pointer;flex-shrink:0;transition:background 0.15s}
+.dm-back-btn:hover{background:var(--tint-5);color:var(--t1)}
+
 .dm-pinned-banner{display:flex;align-items:center;gap:10px;padding:9px 12px;margin:8px 14px 10px;background:linear-gradient(135deg,var(--tint-6),var(--brand-glow-soft));border:1px solid var(--tint-7);border-radius:10px;cursor:pointer;color:var(--t1);box-shadow:0 0 10px var(--tint-4)}
 
 .dm-pinned-banner:hover{background:linear-gradient(135deg,var(--tint-7),var(--brand-glow));border-color:var(--tint-9)}
@@ -2346,7 +2349,10 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 .taskbar-left{display:flex;align-items:center;gap:10px}
 
-.tb-logo{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:flex;align-items:center;justify-content:center;font-family:'Space Mono','Vazirmatn',monospace;font-weight:700;color:white;font-size:0.7rem;cursor:pointer;box-shadow:0 4px 12px rgba(185,28,74,0.3)}
+.tb-logo{display:none}
+
+.orb-col-fab-inline{width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:none;align-items:center;justify-content:center;color:white;cursor:pointer;box-shadow:0 4px 12px var(--brand-glow-strong);border:none;transition:transform 0.15s}
+.orb-col-fab-inline:active{transform:scale(0.92)}
 
 .tb-clock{font-family:'Space Mono','Vazirmatn',monospace;font-size:0.7rem;color:var(--t2);letter-spacing:1px;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background 0.2s}
 
@@ -4034,9 +4040,24 @@ select.sm-input option{background:var(--panel);color:var(--t1);padding:6px 10px}
 
   .marked-channels{display:flex}
 
-  .dm-pane{grid-template-columns:1fr}
+  /* DM: show list by default, hide conv. When a conv is active, flip. */
+  .dm-pane{grid-template-columns:1fr;position:relative}
+  .dm-list{display:flex}
+  .dm-pane.has-active-conv .dm-list{display:none}
+  .dm-pane.has-active-conv .dm-conv{display:flex}
+  .dm-conv{display:none;flex-direction:column}
+  .dm-back-btn{display:flex}
 
-  .dm-list{display:none}
+  /* Orbits FAB: show inline in taskbar instead of floating */
+  .orb-col-fab{display:none !important}
+  .orb-col-fab-inline{display:flex}
+
+  /* Settings: stack sidebar on top of content */
+  #profileModal.is-editing .profile-edit{flex-direction:column !important;overflow-y:auto}
+  .settings-side{width:100% !important;flex-direction:row !important;flex-wrap:wrap;border-right:none !important;border-bottom:1px solid var(--gb);padding:8px !important;gap:4px !important;overflow-x:auto;overflow-y:visible}
+  .settings-side-h{display:none}
+  .settings-side-item{padding:6px 8px !important;font-size:0.5rem !important;white-space:nowrap}
+  .settings-content{overflow-y:auto;flex:1;min-height:0}
 
   .ph-title{font-size:0.7rem}
 

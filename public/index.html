@@ -543,6 +543,8 @@
 
             <div class="dm-head" id="dmHead" style="display:none">
 
+              <button class="dm-back-btn" id="dmBackBtn" type="button" title="Back to conversations"><i data-lucide="arrow-left" style="width:16px;height:16px"></i></button>
+
               <div class="dm-head-av" id="dmHeadAv">
 
                 <span id="dmHeadAvText"></span>
@@ -965,8 +967,6 @@
 
             <button class="sm-btn primary" id="modalEditBtn"><i data-lucide="settings" style="width:11px;height:11px"></i>SETTINGS</button>
 
-            <button class="sm-btn cancel" id="modalShareSelf"><i data-lucide="share-2" style="width:11px;height:11px"></i>SHARE PROFILE</button>
-
           </div>
 
         </div>
@@ -1006,6 +1006,8 @@
             <button class="settings-side-item" data-st-action="voice" type="button"><i data-lucide="mic"></i>Voice &amp; audio<i data-lucide="external-link" style="margin-left:auto;width:11px;height:11px;opacity:0.6"></i></button>
 
             <button class="settings-side-item" data-st-tab="overlay" type="button"><i data-lucide="picture-in-picture-2"></i>Game overlay</button>
+
+            <button class="settings-side-item" data-st-tab="download" type="button"><i data-lucide="download"></i>Download app</button>
 
           </div>
 
@@ -1447,6 +1449,39 @@
                     <li><i data-lucide="check" style="width:10px;height:10px"></i>Move/resize anywhere on any monitor</li>
 
                   </ul>
+
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+          <div class="settings-pane" data-st-pane="download">
+
+            <div class="sm-field">
+
+              <label class="sm-label">DOWNLOAD ORBLOOD</label>
+
+              <div class="settings-locked-card">
+
+                <div class="settings-locked-icon"><i data-lucide="download" style="width:18px;height:18px"></i></div>
+
+                <div class="settings-locked-body">
+
+                  <div class="settings-locked-title">Get the desktop app</div>
+
+                  <div class="settings-locked-desc">
+                    Run Orblood as a standalone app on your desktop. Get system-wide hotkeys, game overlay support, and native notifications.
+                  </div>
+
+                  <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+                    <a class="sm-btn primary" href="https://github.com/pvwvuow/orb-lood/releases" target="_blank" rel="noopener"><i data-lucide="monitor" style="width:11px;height:11px"></i>WINDOWS</a>
+                    <a class="sm-btn cancel" href="https://github.com/pvwvuow/orb-lood/releases" target="_blank" rel="noopener"><i data-lucide="laptop" style="width:11px;height:11px"></i>LINUX</a>
+                  </div>
+
+                  <div style="font-size:0.6rem;color:var(--t3);margin-top:10px;line-height:1.5">You can also install Orblood as a PWA: open the site in Chrome/Edge, tap the install icon in the address bar.</div>
 
                 </div>
 
@@ -2674,7 +2709,9 @@
 
       <div class="taskbar-left">
 
-        <button class="tb-logo" id="tbLogo" title="ORBLOOD">O</button>
+        <button class="orb-col-fab-inline" id="orbColFabInline" type="button" aria-label="Open orbits panel" title="Orbits">
+          <i data-lucide="orbit" style="width:16px;height:16px"></i>
+        </button>
 
       </div>
 
@@ -2690,7 +2727,7 @@
 
       <div class="taskbar-right">
 
-        <span class="tb-version" id="tbVersion" style="font-family:'Space Mono',monospace;font-size:0.55rem;color:var(--t3);letter-spacing:0.5px;opacity:0.7;margin-right:6px;user-select:none">v2026.05.16</span>
+        <span class="tb-version" id="tbVersion" style="font-family:'Space Mono',monospace;font-size:0.55rem;color:var(--t3);letter-spacing:0.5px;opacity:0.7;margin-right:6px;user-select:none">v2026.05.16c</span>
 
         <div class="tb-avatar" id="tbAvatar" title="My profile">C</div>
 
@@ -2702,7 +2739,7 @@
 
 </div>
 
-<script src="/js/app.js?v=20260516b" defer></script>
+<script src="/js/app.js?v=20260516c" defer></script>
 
 </body>
 

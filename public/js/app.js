@@ -13,7 +13,7 @@
 
   // bundle or the fresh one.
 
-  console.log('[orblood] client build 2026-05-16-b (force TURN relay for Iran filtering)');
+  console.log('[orblood] client build 2026-05-16-c (fix voice + UI fixes for PWA)');
 
   // Mobile-only: wire the FAB + scrim to slide the orbits drawer in / out.
 
@@ -2219,6 +2219,10 @@
     document.getElementById('dmEmpty').style.display = 'none';
 
     document.getElementById('dmHead').style.display = 'flex';
+
+    // Mobile: switch from list view to conversation view
+    const dmPane = document.querySelector('.dm-pane');
+    if (dmPane) dmPane.classList.add('has-active-conv');
 
     document.getElementById('dmMsgs').style.display = 'flex';
 
@@ -16864,9 +16868,17 @@
 
     if (pageId === 'pageMessages' && !currentConversation){
 
-      const firstKey = Object.keys(conversations)[0];
-
-      if (firstKey) openConversation(firstKey);
+      // On mobile/PWA, show the conversation list first (don't auto-open).
+      // On desktop, auto-open the first conversation as before.
+      const isMobile = window.innerWidth <= 560;
+      if (!isMobile) {
+        const firstKey = Object.keys(conversations)[0];
+        if (firstKey) openConversation(firstKey);
+      } else {
+        // Ensure we're showing the list view
+        const dmPane = document.querySelector('.dm-pane');
+        if (dmPane) dmPane.classList.remove('has-active-conv');
+      }
 
     }
 
@@ -16994,7 +17006,35 @@
 
   document.querySelectorAll('.tb[data-page]').forEach(b => { b.addEventListener('click', () => setPage(b.dataset.page)); });
 
-  document.getElementById('tbLogo').addEventListener('click', () => setPage('pageHome'));
+  // Inline orbits FAB (PWA taskbar) — opens the orbits drawer just like the floating FAB.
+  (function(){
+    const fabInline = document.getElementById('orbColFabInline');
+    const orbCol = document.getElementById('orbCol');
+    const scrim = document.getElementById('orbColScrim');
+    if (fabInline && orbCol && scrim) {
+      fabInline.addEventListener('click', function(e){
+        e.preventDefault();
+        if (orbCol.classList.contains('open')){
+          orbCol.classList.remove('open');
+          scrim.classList.remove('show');
+        } else {
+          orbCol.classList.add('open');
+          scrim.classList.add('show');
+        }
+      });
+    }
+  })();
+
+  // DM back button — returns to conversation list on mobile
+  (function(){
+    const backBtn = document.getElementById('dmBackBtn');
+    if (backBtn) {
+      backBtn.addEventListener('click', function(){
+        const pane = document.querySelector('.dm-pane');
+        if (pane) pane.classList.remove('has-active-conv');
+      });
+    }
+  })();
 
   function handleAction(a){
 
