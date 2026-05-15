@@ -41,6 +41,15 @@ services:
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-*}
       UPLOAD_DIR: /data/uploads
       PUBLIC_UPLOADS_BASE: /uploads
+      # Voice / TURN — coturn runs on the same VPS. Set these so the
+      # backend tells browsers to relay media through your own server.
+      # If PUBLIC_ORIGIN is a real domain, voice-config.js auto-derives
+      # TURN URLs from it; these explicit vars take priority if set.
+      EXPRESSTURN_USERNAME: ${EXPRESSTURN_USERNAME:-}
+      EXPRESSTURN_PASSWORD: ${EXPRESSTURN_PASSWORD:-}
+      EXPRESSTURN_URLS: ${EXPRESSTURN_URLS:-}
+      COTURN_USERNAME: ${COTURN_USERNAME:-orblood}
+      COTURN_PASSWORD: ${COTURN_PASSWORD:-}
     volumes:
       - uploads:/data/uploads
     ports:
