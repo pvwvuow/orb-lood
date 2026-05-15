@@ -13,7 +13,7 @@
 
   // bundle or the fresh one.
 
-  console.log('[orblood] client build 2026-05-16-a (self-hosted TURN for Iran, version badge)');
+  console.log('[orblood] client build 2026-05-16-b (force TURN relay for Iran filtering)');
 
   // Mobile-only: wire the FAB + scrim to slide the orbits drawer in / out.
 
@@ -9985,6 +9985,26 @@
 
     let iceServers = [];
 
+    // For Iran-filtered networks, P2P (host/srflx) candidates almost never
+
+    // work because users sit behind carrier-grade NAT or ISP-level filtering
+
+    // that blocks direct UDP. Forcing 'relay' means every byte of audio
+
+    // flows through our own coturn server (which IS reachable), so the
+
+    // connection succeeds in seconds instead of timing out for 30s+ trying
+
+    // to find a direct path that doesn't exist.
+
+    //
+
+    // The server tells us whether to force-relay via /voice/config; it can
+
+    // also be overridden by the user from devtools (window.__forceRelay = ...).
+
+    let forceRelay = true;
+
     async function loadIceConfig(){
 
       if (!backend.isConfigured()) return;
@@ -9996,6 +10016,16 @@
       }).then(x => x.json()).catch(()=>null);
 
       if (r && Array.isArray(r.iceServers) && r.iceServers.length) iceServers = r.iceServers;
+
+      // Server can opt out of force-relay (e.g. for non-filtered networks).
+
+      if (r && typeof r.forceRelay === 'boolean') forceRelay = r.forceRelay;
+
+      if (typeof window !== 'undefined' && typeof window.__forceRelay === 'boolean'){
+
+        forceRelay = window.__forceRelay;
+
+      }
 
     }
 
@@ -10374,7 +10404,21 @@
 
     function newPc(peerName){
 
-      const pc = new RTCPeerConnection({ iceServers });
+      const pcConfig = { iceServers };
+
+      if (forceRelay) {
+
+        // Skip every host/srflx candidate; only keep TURN relay candidates.
+
+        // This is what makes the call actually connect on filtered networks
+
+        // where direct P2P is impossible.
+
+        pcConfig.iceTransportPolicy = 'relay';
+
+      }
+
+      const pc = new RTCPeerConnection(pcConfig);
 
       const audioEl = document.createElement('audio');
 

@@ -64,7 +64,15 @@ voiceConfigRouter.get('/voice/config', requireAuth, (_req, res) => {
   // fallback because those are blocked in Iran and would only cause
   // timeouts that slow down ICE gathering.
 
-  res.json({ iceServers: ice });
+  // forceRelay tells the client to set iceTransportPolicy:'relay' so every
+  // RTP packet flows through our coturn server. This is what makes voice
+  // actually work on heavily-filtered networks (Iran, China, corporate
+  // firewalls) where direct P2P fails. Operators on open networks can flip
+  // VOICE_FORCE_RELAY=false in .env to allow P2P (saves coturn bandwidth).
+  res.json({
+    iceServers: ice,
+    forceRelay: config.voice.forceRelay !== false
+  });
 });
 
 // Helper to extract hostname from a URL string.

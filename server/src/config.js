@@ -42,6 +42,12 @@ export const config = {
     urls: (process.env.TURN_URLS || process.env.EXPRESSTURN_URLS || '').split(',').map(s => s.trim()).filter(Boolean),
     // If set, this is used as the hostname for the self-hosted coturn.
     // If empty, the hostname is derived from PUBLIC_ORIGIN.
-    selfHost: process.env.TURN_HOST || ''
+    selfHost: process.env.TURN_HOST || '',
+    // When true (default), the client uses iceTransportPolicy:'relay' so all
+    // audio flows through our coturn server. This is what makes voice work
+    // on filtered networks (Iran/China/corporate) where direct P2P is
+    // blocked. Set VOICE_FORCE_RELAY=false to let clients try P2P first
+    // (saves bandwidth on open networks but breaks calls on filtered ones).
+    forceRelay: (process.env.VOICE_FORCE_RELAY || 'true').toLowerCase() !== 'false'
   }
 };
