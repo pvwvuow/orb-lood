@@ -22555,32 +22555,9 @@
 
   });
 
-  // ============== WEB VERSION: REFRESH & DOWNLOAD BUTTONS ==============
-  // Add refresh and download buttons to the taskbar (non-Electron only).
-  
-  (function setupWebButtons(){
-    if (window.electronAPI) return;
-    
-    // Insert into the taskbar-left section (next to the O logo)
-    const taskbarLeft = document.querySelector('.taskbar-left');
-    if (!taskbarLeft) return;
-    
-    const refreshBtn = document.createElement('button');
-    refreshBtn.className = 'tb';
-    refreshBtn.title = 'Refresh';
-    refreshBtn.innerHTML = '<i data-lucide="refresh-cw"></i>';
-    refreshBtn.addEventListener('click', () => location.reload());
-    
-    const downloadBtn = document.createElement('button');
-    downloadBtn.className = 'tb';
-    downloadBtn.title = 'Download Desktop App';
-    downloadBtn.innerHTML = '<i data-lucide="download"></i>';
-    downloadBtn.addEventListener('click', () => window.open('https://github.com/pvwvuow/orb-lood/releases/latest', '_blank'));
-    
-    taskbarLeft.appendChild(refreshBtn);
-    taskbarLeft.appendChild(downloadBtn);
-    refreshIcons();
-  })();
+  // ============== WEB VERSION BUTTONS (removed) ==============
+  // Refresh button removed per user request.
+  // Download button moved to Settings > Download app tab.
 
 })();
 
