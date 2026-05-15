@@ -2286,39 +2286,51 @@
 
     const _msgsEl = document.getElementById('dmMsgs');
 
-    // Empty-state placeholder while we wait for /api/dms/<peer> on a
+    // IMPORTANT: Always clear the DOM immediately when switching
 
-    // fresh open. We always paint this immediately so the user never
+    // conversations so the previous chat's bubbles never bleed through.
 
-    // sees a spinner over a brand new conversation that turns out to be
+    // Also invalidate any render cache for the new key so the full-
 
-    // empty. If history actually exists, the merge handler below
+    // rebuild path is always taken on the first render of a fresh switch.
 
-    // re-renders with the real bubbles a moment later. We keep showing
+    _msgsEl.innerHTML = '';
 
-    // the empty placeholder if the server returns zero messages.
+    invalidateDmCache(key);
 
     if (!conv._historyFetched && backend.isConfigured() && key && key !== 'saved'){
 
-      // Paint a short skeleton stack instead of jumping straight to the
+      // History not yet loaded — check if we already know there are no
 
-      // empty-thread message. If history exists the merge below replaces
+      // messages for this thread. If messages[key] is empty (no preview,
 
-      // it within ~one frame; if the thread really is empty, the same
+      // no WS push), show the empty-thread copy immediately instead of
 
-      // merge swaps the skeleton for the real empty-state copy.
+      // a skeleton that will just flash away when the fetch returns [].
 
-      _msgsEl.innerHTML =
+      const localMsgs = messages[key] || [];
 
-        '<div class="sk-dm-bubble them"><span class="sk sk-line sk-l-w60"></span><span class="sk sk-line sk-l-w40"></span></div>'
+      if (localMsgs.length === 0){
 
-        + '<div class="sk-dm-bubble me"><span class="sk sk-line sk-l-w50"></span></div>'
+        // Show empty state directly — no skeleton flicker for brand-new threads.
 
-        + '<div class="sk-dm-bubble them"><span class="sk sk-line sk-l-w70"></span><span class="sk sk-line sk-l-w30"></span></div>'
+        _msgsEl.innerHTML = '<div class="dm-empty-thread">'
 
-        + '<div class="sk-dm-bubble me"><span class="sk sk-line sk-l-w60"></span><span class="sk sk-line sk-l-w40"></span></div>';
+          + '<div class="dm-empty-thread-eyebrow">// NEW TRANSMISSION</div>'
 
-      invalidateDmCache(key);
+          + '<div class="dm-empty-thread-text">No messages yet — be the first to ping ' + escapeHtml((conv && conv.name)||'them') + '.</div>'
+
+          + '</div>';
+
+      } else {
+
+        // We have some local messages (preview from snapshot) — render them
+
+        // while the full history loads in the background.
+
+        renderConversation();
+
+      }
 
     } else {
 
@@ -10462,6 +10474,18 @@
 
               }
 
+              // Don't send a new offer if we already have one pending
+
+              // (a previous restart attempt is still waiting for an answer).
+
+              if (pc.signalingState === 'have-local-offer'){
+
+                console.debug('[voice] skipping restart offer — already have pending offer for', peerName);
+
+                return;
+
+              }
+
               try {
 
                 pc.restartIce && pc.restartIce();
@@ -10835,9 +10859,75 @@
 
       }
 
+      const pc = rec.pc;
+
+      const signalingState = pc.signalingState;
+
+      // --- Perfect Negotiation glare handling ---
+
+      // If we receive an OFFER while we already have a local offer pending
+
+      // (signalingState === 'have-local-offer'), that's a "glare" — both
+
+      // sides sent offers simultaneously.
+
+      //
+
+      // • Polite side: rollback our own offer, accept the remote offer, and
+
+      //   answer it. This breaks the deadlock gracefully.
+
+      // • Impolite side: ignore the incoming offer entirely — our offer wins.
+
+      //
+
+      // If we receive an ANSWER while in 'stable' state (e.g. an ICE restart
+
+      // answer that arrived after the connection already recovered), we
+
+      // simply ignore it — applying it would throw.
+
+      if (sdp.type === 'offer' && signalingState === 'have-local-offer'){
+
+        if (!rec.polite){
+
+          // Impolite side wins glare — drop the remote offer.
+
+          console.debug('[voice] glare: impolite side ignoring remote offer from', peerName);
+
+          return;
+
+        }
+
+        // Polite side yields — rollback our pending offer first.
+
+        console.debug('[voice] glare: polite side rolling back for', peerName);
+
+        try {
+
+          await pc.setLocalDescription({ type: 'rollback' });
+
+        } catch(e){
+
+          console.warn('[voice] rollback failed:', e && e.message);
+
+          return;
+
+        }
+
+      } else if (sdp.type === 'answer' && signalingState === 'stable'){
+
+        // Stale answer (ICE restart resolved before the answer arrived).
+
+        console.debug('[voice] ignoring stale answer from', peerName, '(already stable)');
+
+        return;
+
+      }
+
       try {
 
-        await rec.pc.setRemoteDescription(sdp);
+        await pc.setRemoteDescription(sdp);
 
       } catch(e){
 
@@ -10855,7 +10945,7 @@
 
         for (const c of rec.pendingIce){
 
-          try { await rec.pc.addIceCandidate(c); }
+          try { await pc.addIceCandidate(c); }
 
           catch(e){ console.warn('[voice] queued addIceCandidate failed:', e && e.message); }
 
@@ -10869,11 +10959,11 @@
 
         try {
 
-          const answer = await rec.pc.createAnswer();
+          const answer = await pc.createAnswer();
 
-          await rec.pc.setLocalDescription(answer);
+          await pc.setLocalDescription(answer);
 
-          _signal(peerName, { kind:'sdp', sdp: rec.pc.localDescription });
+          _signal(peerName, { kind:'sdp', sdp: pc.localDescription });
 
         } catch(e){
 
