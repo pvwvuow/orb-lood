@@ -2311,16 +2311,17 @@
 
       const localMsgs = messages[key] || [];
 
-      if (localMsgs.length === 0 && !conv._historyFetched){
+      if (localMsgs.length === 0){
 
-        // Show empty state directly — no skeleton flicker for brand-new threads.
+        // Show a loading indicator while history is being fetched.
+        // Previously this showed "NEW TRANSMISSION" which made the user
+        // think there were no messages even while the fetch was in flight.
+        // We show the spinner regardless of _historyFetched because the
+        // backend re-fetch always fires and will resolve to the real state.
 
-        _msgsEl.innerHTML = '<div class="dm-empty-thread">'
-
-          + '<div class="dm-empty-thread-eyebrow">// NEW TRANSMISSION</div>'
-
-          + '<div class="dm-empty-thread-text">No messages yet — be the first to ping ' + escapeHtml((conv && conv.name)||'them') + '.</div>'
-
+        _msgsEl.innerHTML = '<div class="dm-loading-thread">'
+          + '<div class="dm-loading-spinner"></div>'
+          + '<div class="dm-loading-text">Loading messages...</div>'
           + '</div>';
 
       } else {
@@ -2372,7 +2373,16 @@
 
       backend.dms.list(peerKey).then(r => {
 
-        if (!r || !Array.isArray(r.messages)) return;
+        if (!r || !Array.isArray(r.messages)){
+          // Even if the response is malformed, clear the loading spinner
+          // and show the real state so the user isn't stuck on "Loading...".
+          if (conversations[key]) conversations[key]._historyFetched = true;
+          if (currentConversation === key){
+            invalidateDmCache(key);
+            renderConversation();
+          }
+          return;
+        }
 
         const local = messages[key] || [];
 
@@ -10046,6 +10056,22 @@
 
     let iceServers = [];
 
+    // ─── Voice Debug Logger ───────────────────────────────────────────
+    // Professional console logging for voice/WebRTC debugging.
+    // All logs are prefixed with [voice] and use appropriate severity.
+    // Set window.__voiceDebug = true in devtools for verbose ICE candidate logs.
+    const _vlog = {
+      _ts: () => new Date().toISOString().slice(11,23),
+      info:  (...args) => console.log('%c[voice]%c ' + _vlog._ts(), 'color:#22c55e;font-weight:bold', 'color:#666', ...args),
+      warn:  (...args) => console.warn('%c[voice]%c ' + _vlog._ts(), 'color:#f59e0b;font-weight:bold', 'color:#666', ...args),
+      error: (...args) => console.error('%c[voice]%c ' + _vlog._ts(), 'color:#ef4444;font-weight:bold', 'color:#666', ...args),
+      debug: (...args) => { if (window.__voiceDebug) console.debug('%c[voice]%c ' + _vlog._ts(), 'color:#8b5cf6;font-weight:bold', 'color:#666', ...args); },
+      group: (label) => console.groupCollapsed('%c[voice]%c ' + label, 'color:#22c55e;font-weight:bold', 'color:#94a3b8'),
+      groupEnd: () => console.groupEnd(),
+      table: (data) => console.table(data),
+    };
+    // ──────────────────────────────────────────────────────────────────
+
     // For Iran-filtered networks, P2P (host/srflx) candidates almost never
 
     // work because users sit behind carrier-grade NAT or ISP-level filtering
@@ -10070,24 +10096,51 @@
 
       if (!backend.isConfigured()) return;
 
+      _vlog.info('Loading ICE config from', _backendBase() + '/voice/config');
+
       const r = await fetch(_backendBase()+'/voice/config', {
 
         headers: { 'Authorization': 'Bearer '+(backend.token.read()||'') }
 
-      }).then(x => x.json()).catch(()=>null);
+      }).then(x => x.json()).catch((e)=>{ _vlog.warn('ICE config fetch failed:', e && e.message); return null; });
 
-      if (r && Array.isArray(r.iceServers) && r.iceServers.length) iceServers = r.iceServers;
+      if (r && Array.isArray(r.iceServers) && r.iceServers.length){
+        iceServers = r.iceServers;
+        _vlog.group('ICE servers received from backend (' + r.iceServers.length + ' entries)');
+        r.iceServers.forEach((s, i) => {
+          _vlog.info('  [' + i + ']', Array.isArray(s.urls) ? s.urls.join(', ') : s.urls, s.username ? '(auth: ' + s.username + ')' : '(no auth)');
+        });
+        _vlog.groupEnd();
+      }
 
-      // If no ICE servers came from the backend, add a minimal fallback
-      // set so at least same-network peers can connect via STUN.
+      // If no ICE servers came from the backend (fetch failed or empty
+      // response), build a TURN config from the backend's own hostname.
+      // This mirrors what the server does in its /voice/config fallback
+      // path — using the same domain the client already connects to
+      // guarantees the TURN server is reachable (since the app itself is).
       if (!iceServers.length){
-        iceServers = [
-          { urls: ['stun:stun.l.google.com:19302'] },
-          { urls: ['stun:stun1.l.google.com:19302'] }
-        ];
-        // Without TURN, force-relay would prevent any connection.
-        forceRelay = false;
-        console.warn('[voice] No TURN servers configured — falling back to public STUN (P2P only)');
+        const backendHost = (() => {
+          try { return new URL(_backendBase()).hostname; } catch(_){ return ''; }
+        })();
+        if (backendHost){
+          iceServers = [
+            { urls: ['stun:' + backendHost + ':3478'] },
+            { urls: ['turn:' + backendHost + ':3478'], username: 'orblood', credential: 'orblood' },
+            { urls: ['turn:' + backendHost + ':3478?transport=tcp'], username: 'orblood', credential: 'orblood' },
+            { urls: ['turns:' + backendHost + ':5349'], username: 'orblood', credential: 'orblood' }
+          ];
+          // Keep forceRelay true — without explicit config, we assume
+          // the network is filtered and relay is needed.
+          _vlog.warn('Backend did not return ICE config — using TURN on ' + backendHost + ' (derived from backend URL)');
+        } else {
+          // Absolute last resort: public STUN only (no relay possible).
+          iceServers = [
+            { urls: ['stun:stun.l.google.com:19302'] },
+            { urls: ['stun:stun1.l.google.com:19302'] }
+          ];
+          forceRelay = false;
+          _vlog.error('No TURN servers configured and cannot derive host — falling back to public STUN (P2P only, calls will FAIL on filtered networks)');
+        }
       }
 
       // Server can opt out of force-relay (e.g. for non-filtered networks).
@@ -10097,8 +10150,11 @@
       if (typeof window !== 'undefined' && typeof window.__forceRelay === 'boolean'){
 
         forceRelay = window.__forceRelay;
+        _vlog.info('forceRelay overridden by window.__forceRelay =', window.__forceRelay);
 
       }
+
+      _vlog.info('ICE config ready — forceRelay:', forceRelay, '| servers:', iceServers.length);
 
     }
 
@@ -10304,6 +10360,8 @@
 
         _callCtx = new AC({ latencyHint: 'interactive' });
 
+        _vlog.debug('Audio processing chain created | sampleRate:', _callCtx.sampleRate);
+
         const src = _callCtx.createMediaStreamSource(raw);
 
         const highpass = _callCtx.createBiquadFilter();   highpass.type = 'highpass';
@@ -10348,7 +10406,7 @@
 
       } catch(e){
 
-        console.warn('[voice] processed call stream build failed:', e && e.message);
+        _vlog.warn('Processed call stream build failed (using raw mic):', e && e.message);
 
         return raw;
 
@@ -10423,7 +10481,7 @@
 
       } catch(e){
 
-        console.warn('[voice] reconfigureMic getUserMedia failed:', e && e.message);
+        _vlog.warn('reconfigureMic getUserMedia failed:', e && e.message);
 
         return false;
 
@@ -10491,7 +10549,11 @@
 
       }
 
+      _vlog.info('Creating RTCPeerConnection for peer:', peerName, '| iceTransportPolicy:', forceRelay ? 'relay' : 'all');
+
       const pc = new RTCPeerConnection(pcConfig);
+
+      const _pcStartTime = Date.now();
 
       const audioEl = document.createElement('audio');
 
@@ -10513,6 +10575,8 @@
 
       pc.ontrack = ev => {
 
+        _vlog.info('Remote track received from', peerName, '| kind:', ev.track.kind, '| readyState:', ev.track.readyState);
+
         audioEl.srcObject = ev.streams[0];
 
         // Honour the user's current deafened state when a new peer joins
@@ -10527,7 +10591,7 @@
 
         if (p && typeof p.catch === 'function') p.catch(err => {
 
-          console.warn('[voice] audio play blocked:', err && err.message);
+          _vlog.warn('Audio play blocked for', peerName, ':', err && err.message);
 
           showToast('Browser blocked audio playback. Click anywhere on the page.', 'warn');
 
@@ -10539,10 +10603,21 @@
 
         if (ev.candidate){
 
+          _vlog.debug('Local ICE candidate:', ev.candidate.type, ev.candidate.protocol, ev.candidate.address ? ev.candidate.address.replace(/\d+\.\d+$/, 'x.x') : '(mdns)');
+
           _signal(peerName, { kind:'ice', candidate: ev.candidate });
+
+        } else {
+
+          _vlog.info('ICE gathering complete for', peerName);
 
         }
 
+      };
+
+      // Log ICE gathering state changes
+      pc.onicegatheringstatechange = () => {
+        _vlog.debug('ICE gathering state:', pc.iceGatheringState, '| peer:', peerName);
       };
 
       // Watch ICE state to drive the orb status indicator (idle /
@@ -10559,15 +10634,38 @@
 
         const state = pc.iceConnectionState;
 
+        const elapsed = ((Date.now() - _pcStartTime) / 1000).toFixed(1);
+
         const rec = peers.get(peerName);
 
         if (!rec) return;
 
         rec.iceState = state;
 
+        // Professional state change log with timing
+        const stateEmoji = { connected: '✓', completed: '✓', failed: '✗', disconnected: '⚠', checking: '…', new: '○' };
+        _vlog.info('ICE state:', (stateEmoji[state] || '?'), state.toUpperCase(), '| peer:', peerName, '| elapsed:', elapsed + 's');
+
         if (state === 'connected' || state === 'completed'){
 
           rec.reconnectAttempts = 0;
+
+          // Log the selected candidate pair for debugging connectivity
+          if (pc.getStats) {
+            pc.getStats(null).then(report => {
+              report.forEach(s => {
+                if (s.type === 'candidate-pair' && s.state === 'succeeded' && s.nominated) {
+                  const local = report.get(s.localCandidateId);
+                  const remote = report.get(s.remoteCandidateId);
+                  _vlog.group('Connected candidate pair for ' + peerName);
+                  _vlog.info('Local:', local ? (local.candidateType + ' ' + local.protocol + ' ' + (local.address || local.ip || '?') + ':' + local.port) : 'unknown');
+                  _vlog.info('Remote:', remote ? (remote.candidateType + ' ' + remote.protocol + ' ' + (remote.address || remote.ip || '?') + ':' + remote.port) : 'unknown');
+                  _vlog.info('Using TURN relay:', local ? local.candidateType === 'relay' : 'unknown');
+                  _vlog.groupEnd();
+                }
+              });
+            }).catch(() => {});
+          }
 
         } else if (state === 'failed' || state === 'disconnected'){
 
@@ -10581,12 +10679,13 @@
 
             const delay = state === 'failed' ? 0 : 1500;
 
-            console.warn('[voice] ICE '+state+', restart in '+delay+'ms (attempt '+rec.reconnectAttempts+')');
+            _vlog.warn('ICE', state, '→ scheduling restart in', delay + 'ms (attempt', rec.reconnectAttempts + '/3) | peer:', peerName);
 
             setTimeout(() => {
 
               if (rec.iceState === 'connected' || rec.iceState === 'completed'){
 
+                _vlog.info('ICE recovered before restart fired | peer:', peerName);
                 rec.reconnectAttempts = 0; return;
 
               }
@@ -10597,7 +10696,7 @@
 
               if (pc.signalingState === 'have-local-offer'){
 
-                console.debug('[voice] skipping restart offer — already have pending offer for', peerName);
+                _vlog.debug('Skipping restart offer — already have pending offer for', peerName);
 
                 return;
 
@@ -10605,6 +10704,7 @@
 
               try {
 
+                _vlog.info('Executing ICE restart for', peerName);
                 pc.restartIce && pc.restartIce();
 
                 _makeOffer(peerName).catch(()=>{});
@@ -10613,6 +10713,8 @@
 
             }, delay);
 
+          } else if (state === 'failed') {
+            _vlog.error('ICE FAILED for', peerName, '— all restart attempts exhausted. Call with this peer is dead.');
           }
 
         }
@@ -10628,6 +10730,8 @@
         const rec = peers.get(peerName);
 
         if (rec) rec.connState = pc.connectionState;
+
+        _vlog.debug('Connection state:', pc.connectionState, '| peer:', peerName);
 
         _recomputeVoiceStatus();
 
@@ -10930,13 +11034,13 @@
 
       if (!to){
 
-        console.warn('[voice] _signal: no routable identifier for peer', peerName);
+        _vlog.warn('_signal: no routable identifier for peer', peerName, '— signal will be dropped');
 
         return;
 
       }
 
-      console.debug('[voice] sending', signal.kind, 'to', to);
+      _vlog.debug('Signaling', signal.kind, '→', to);
 
       wsSend({ type:'voice-signal', to, signal });
 
@@ -10951,6 +11055,8 @@
       // doesn't yield on glare and is the one that retries on ICE failure.
 
       rec.polite = false;
+
+      _vlog.info('Creating SDP offer for', peerName, '(impolite side)');
 
       const offer = await rec.pc.createOffer();
 
@@ -10973,7 +11079,10 @@
         // Peer offered first → we're polite (the side that yields on glare).
 
         rec.polite = true;
+        _vlog.info('Received SDP', sdp.type, 'from', peerName, '(new peer, we are polite side)');
 
+      } else {
+        _vlog.info('Received SDP', sdp.type, 'from', peerName, '| signalingState:', rec.pc.signalingState);
       }
 
       const pc = rec.pc;
@@ -11010,7 +11119,7 @@
 
           // Impolite side wins glare — drop the remote offer.
 
-          console.debug('[voice] glare: impolite side ignoring remote offer from', peerName);
+          _vlog.warn('GLARE detected: impolite side ignoring remote offer from', peerName);
 
           return;
 
@@ -11018,7 +11127,7 @@
 
         // Polite side yields — rollback our pending offer first.
 
-        console.debug('[voice] glare: polite side rolling back for', peerName);
+        _vlog.info('GLARE detected: polite side rolling back for', peerName);
 
         try {
 
@@ -11026,7 +11135,7 @@
 
         } catch(e){
 
-          console.warn('[voice] rollback failed:', e && e.message);
+          _vlog.error('Rollback failed for', peerName, ':', e && e.message);
 
           return;
 
@@ -11036,7 +11145,7 @@
 
         // Stale answer (ICE restart resolved before the answer arrived).
 
-        console.debug('[voice] ignoring stale answer from', peerName, '(already stable)');
+        _vlog.debug('Ignoring stale answer from', peerName, '(already stable)');
 
         return;
 
@@ -11048,7 +11157,7 @@
 
       } catch(e){
 
-        console.warn('[voice] setRemoteDescription failed for', peerName, e && e.message);
+        _vlog.error('setRemoteDescription failed for', peerName, ':', e && e.message);
 
         return;
 
@@ -11060,11 +11169,13 @@
 
       if (rec.pendingIce && rec.pendingIce.length){
 
+        _vlog.info('Flushing', rec.pendingIce.length, 'queued ICE candidates for', peerName);
+
         for (const c of rec.pendingIce){
 
           try { await pc.addIceCandidate(c); }
 
-          catch(e){ console.warn('[voice] queued addIceCandidate failed:', e && e.message); }
+          catch(e){ _vlog.warn('Queued addIceCandidate failed:', e && e.message); }
 
         }
 
@@ -11080,11 +11191,13 @@
 
           await pc.setLocalDescription(answer);
 
+          _vlog.info('Created SDP answer for', peerName);
+
           _signal(peerName, { kind:'sdp', sdp: pc.localDescription });
 
         } catch(e){
 
-          console.warn('[voice] createAnswer failed:', e && e.message);
+          _vlog.error('createAnswer failed for', peerName, ':', e && e.message);
 
         }
 
@@ -11110,13 +11223,15 @@
 
         rec.pendingIce.push(candidate);
 
+        _vlog.debug('Queuing remote ICE candidate (no remote desc yet) | peer:', peerName);
+
         return;
 
       }
 
-      try { await rec.pc.addIceCandidate(candidate); }
+      try { await rec.pc.addIceCandidate(candidate); _vlog.debug('Added remote ICE candidate | peer:', peerName, '| type:', candidate.candidate ? candidate.candidate.split(' ')[7] : '?'); }
 
-      catch(e){ console.warn('[voice] addIceCandidate failed:', e && e.message); }
+      catch(e){ _vlog.warn('addIceCandidate failed for', peerName, ':', e && e.message); }
 
     }
 
@@ -11217,11 +11332,15 @@
 
         serverId = sid; channelId = cid;
 
+        _vlog.info('═══ VOICE START ═══ server:', sid, '| channel:', cid);
+
         setVoiceStatus('connecting');
 
         await loadIceConfig();
 
-        try { await ensureMic(); } catch(_){
+        try { await ensureMic(); _vlog.info('Microphone acquired successfully'); } catch(e){
+
+          _vlog.error('Microphone permission denied or unavailable:', e && e.message);
 
           setVoiceStatus('failed');
 
@@ -11269,6 +11388,8 @@
 
       stop(){
 
+        _vlog.info('═══ VOICE STOP ═══ peers:', peers.size, '| server:', serverId, '| channel:', channelId);
+
         _stopStatsPoller();
 
         peers.forEach((_, name) => tearDownPeer(name));
@@ -11307,13 +11428,15 @@
 
         if (sid !== serverId || cid !== channelId) return;
 
+        _vlog.info('Peer(s) joined channel — members:', members.join(', '));
+
         // If we're still in the boot path (no mic yet), buffer this
 
         // membership snapshot and replay after start() resolves —
 
         // otherwise we'd build PCs without an audio track.
 
-        if (!localStream){ _pendingMembers = members; return; }
+        if (!localStream){ _vlog.debug('No mic yet — buffering member snapshot'); _pendingMembers = members; return; }
 
         _ensurePeersForMembers(members);
 
@@ -11327,7 +11450,10 @@
 
         for (const name of [...peers.keys()]){
 
-          if (!members.includes(name)) tearDownPeer(name);
+          if (!members.includes(name)){
+            _vlog.info('Peer left:', name, '— tearing down connection');
+            tearDownPeer(name);
+          }
 
         }
 
@@ -11384,6 +11510,8 @@
         const sig = msg.signal;
 
         if (!sig) return;
+
+        _vlog.debug('Incoming signal:', sig.kind, '| from:', peerName);
 
         if (sig.kind === 'sdp')  _onSdp(peerName, sig.sdp);
 

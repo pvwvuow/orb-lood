@@ -1696,6 +1696,10 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 .dm-empty-thread{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;height:100%;min-height:160px;padding:24px;text-align:center}
 .dm-empty-thread-eyebrow{font-family:'Space Mono','Vazirmatn',monospace;font-size:0.55rem;letter-spacing:1.8px;color:var(--accent);opacity:0.7}
 .dm-empty-thread-text{font-size:0.78rem;color:var(--t2);max-width:260px;line-height:1.6}
+/* DM loading indicator — shown while history is being fetched from backend */
+.dm-loading-thread{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;height:100%;min-height:160px;padding:24px;text-align:center}
+.dm-loading-spinner{width:24px;height:24px;border:2.5px solid var(--tint-4);border-top-color:var(--accent);border-radius:50%;animation:dmSpin 0.7s linear infinite}
+.dm-loading-text{font-size:0.7rem;color:var(--t3);letter-spacing:0.5px;font-family:'Space Mono','Vazirmatn',monospace}
 .cs-overrides{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding:10px;background:var(--tint-1);border:1px solid var(--gb);border-radius:10px;max-height:280px;overflow-y:auto}
 .cs-ovr-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding:6px 8px;background:var(--tint-2);border-radius:8px}
 .cs-ovr-label{font-family:'Space Mono','Vazirmatn',monospace;font-size:0.6rem;letter-spacing:1px;color:var(--t1);display:flex;align-items:center;gap:6px}
@@ -4072,6 +4076,9 @@ select.sm-input option{background:var(--panel);color:var(--t1);padding:6px 10px}
 
   .members-sidebar.open{width:200px}
 
+  /* Hide version label on mobile so the avatar icon isn't pushed off-screen */
+  .tb-version{display:none}
+
 }
 
 /* ---- PWA standalone mode ----
@@ -4084,6 +4091,8 @@ select.sm-input option{background:var(--panel);color:var(--t1);padding:6px 10px}
   .app.glass-panel{border-radius:0;border:none}
   .taskbar{padding-left:max(12px, env(safe-area-inset-left, 0px));padding-right:max(12px, env(safe-area-inset-right, 0px));padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px))}
   .page-header{padding-top:env(safe-area-inset-top, 0px)}
+  /* Hide version label in PWA so avatar icon stays visible */
+  .tb-version{display:none !important}
 }
 
 @media (display-mode: standalone) and (max-width:560px) {
