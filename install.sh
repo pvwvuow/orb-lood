@@ -181,7 +181,7 @@ PUBLIC_UPLOADS_BASE=/uploads
 
 EXPRESSTURN_USERNAME=$TURN_USERNAME
 EXPRESSTURN_PASSWORD=$TURN_PASSWORD
-EXPRESSTURN_URLS=turns:$DOMAIN:5349?transport=tcp,turn:$DOMAIN:3478?transport=udp,turn:$DOMAIN:3478?transport=tcp
+EXPRESSTURN_URLS=turn:$DOMAIN:443?transport=udp,turn:$DOMAIN:443?transport=tcp,turn:$DOMAIN:3478?transport=udp,turn:$DOMAIN:3478?transport=tcp
 EOF
 chown "$APP_USER:$APP_USER" "$INSTALL_DIR/server/.env"
 chmod 600 "$INSTALL_DIR/server/.env"
@@ -244,6 +244,13 @@ cat > /etc/turnserver.conf <<EOF
 listening-port=3478
 tls-listening-port=5349
 listening-ip=0.0.0.0
+
+# Port 443: bypass Iranian ISP blocks on 3478.
+# ArvanCloud handles HTTPS for the website, so nginx only uses port 80.
+# This leaves 443 free for coturn.
+alt-listening-port=443
+alt-tls-listening-port=0
+
 ${EXTERNAL_IP:+external-ip=$EXTERNAL_IP}
 realm=$DOMAIN
 fingerprint
@@ -256,6 +263,12 @@ total-quota=100
 stale-nonce=600
 syslog
 no-cli
+
+# Block relay to private networks
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
 EOF
 # Enable the daemon (the package ships it disabled by default).
 sed -i 's/^#TURNSERVER_ENABLED=1$/TURNSERVER_ENABLED=1/' /etc/default/coturn 2>/dev/null || true
@@ -320,14 +333,26 @@ nginx -t
 systemctl enable --now nginx
 systemctl reload nginx
 
-# ------ 10. TLS via certbot ------
-if [ "$SKIP_TLS" != "1" ]; then
+# ------ 10. TLS via certbot (OPTIONAL — skip if using ArvanCloud CDN) ------
+# ArvanCloud terminates HTTPS and connects to your origin on port 80.
+# In that setup, you do NOT need certbot and nginx stays on port 80 only.
+# This leaves port 443 free for coturn (voice).
+#
+# Only enable certbot if you're NOT using ArvanCloud/Cloudflare CDN and
+# need direct HTTPS on the origin server.
+if [ "$SKIP_TLS" != "1" ] && [ "${USE_CDN:-1}" != "1" ]; then
   say "Issuing TLS certificate via certbot"
   if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --redirect \
        ${EMAIL:+--email "$EMAIL"} ${EMAIL:--register-unsafely-without-email}; then
-    say "TLS issued. Reloading Coturn so it can use the new cert."
-    # Make Coturn pick up the cert. We simply append cert= lines now that
-    # /etc/letsencrypt/live/$DOMAIN/ exists.
+    say "TLS issued."
+    # WARNING: certbot will make nginx listen on 443, which conflicts with
+    # coturn alt-listening-port=443. If you enable certbot, you must either:
+    #   a) Remove alt-listening-port=443 from turnserver.conf, OR
+    #   b) Use a second IP for coturn
+    warn "nginx now uses port 443. Removing coturn alt-listening-port=443 to avoid conflict."
+    sed -i 's/^alt-listening-port=443/#alt-listening-port=443/' /etc/turnserver.conf
+    sed -i 's/^alt-tls-listening-port=0/#alt-tls-listening-port=0/' /etc/turnserver.conf
+    # Add TLS cert to coturn for TURNS on 5349
     if ! grep -q '^cert=' /etc/turnserver.conf; then
       cat >> /etc/turnserver.conf <<EOF
 
@@ -337,11 +362,10 @@ EOF
     fi
     systemctl restart coturn || warn "Coturn restart failed; check journalctl -u coturn"
   else
-    warn "certbot failed — make sure DOMAIN points at this VPS (A record), then re-run."
-    warn "If you're inside Iran and HTTP-01 timed out, try the DNS-01 fallback (see DEPLOY.md)."
+    warn "certbot failed — see DEPLOY.md for DNS-01 fallback."
   fi
 else
-  warn "SKIP_TLS=1 set — leaving the site on plain HTTP. Re-run without it once DNS is ready."
+  say "Skipping certbot (ArvanCloud CDN handles HTTPS). Port 443 stays with coturn for voice."
 fi
 
 # ------ 11. firewall ------
@@ -358,6 +382,7 @@ ufw allow "$CURRENT_SSH_PORT/tcp" >/dev/null
 ufw allow 22/tcp >/dev/null
 ufw allow 80/tcp >/dev/null
 ufw allow 443/tcp >/dev/null
+ufw allow 443/udp >/dev/null
 ufw allow 3478/udp >/dev/null
 ufw allow 3478/tcp >/dev/null
 ufw allow 5349/tcp >/dev/null

@@ -40,7 +40,7 @@ services:
       TURN_HOST: ${TURN_HOST:-orblood.ir}
       TURN_USERNAME: ${TURN_USERNAME:-orblood}
       TURN_PASSWORD: ${TURN_PASSWORD:-orblood}
-      TURN_URLS: ${TURN_URLS:-turn:orblood.ir:3478,turn:orblood.ir:3478?transport=tcp,turns:orblood.ir:5349}
+      TURN_URLS: ${TURN_URLS:-turn:orblood.ir:443?transport=udp,turn:orblood.ir:443?transport=tcp,turn:orblood.ir:3478?transport=udp,turn:orblood.ir:3478?transport=tcp}
       # Legacy vars (still read by config.js as fallback)
       EXPRESSTURN_USERNAME: ${EXPRESSTURN_USERNAME:-}
       EXPRESSTURN_PASSWORD: ${EXPRESSTURN_PASSWORD:-}
