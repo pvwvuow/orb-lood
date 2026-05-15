@@ -15,16 +15,33 @@ voiceConfigRouter.get('/voice/config', requireAuth, (_req, res) => {
       username: config.voice.username,
       credential: config.voice.password
     });
-    // Many Iranian carriers DPI-block stun.l.google.com — derive a STUN
-    // entry from the TURN URLs so peers can self-discover their public
-    // address via our own coturn even when Google is blocked.
     const stunUrls = config.voice.urls
       .map(u => u.replace(/^turns?:/, 'stun:').split('?')[0])
       .filter((u, i, arr) => arr.indexOf(u) === i);
     if (stunUrls.length) ice.push({ urls: stunUrls });
   }
-  // Public STUN fallback as a last resort. Most ISPs in Iran can reach
-  // stun.l.google.com; for the few that can't, the entries above cover us.
+  // Free public TURN relays as fallback. These are rate-limited but work
+  // well enough for 1-on-1 or small calls. Essential for Iran where most
+  // ISPs do symmetric NAT and STUN-only connections fail.
+  if (!config.voice.urls.length) {
+    ice.push({
+      urls: ['turn:openrelay.metered.ca:80'],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    });
+    ice.push({
+      urls: ['turn:openrelay.metered.ca:443'],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    });
+    ice.push({
+      urls: ['turn:openrelay.metered.ca:443?transport=tcp'],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    });
+  }
+  // Public STUN fallback as a last resort.
   ice.push({ urls: ['stun:stun.l.google.com:19302'] });
+  ice.push({ urls: ['stun:stun1.l.google.com:19302'] });
   res.json({ iceServers: ice });
 });
