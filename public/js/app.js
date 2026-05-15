@@ -15,59 +15,7 @@
 
   console.log('[orblood] client build 2026-05-16-c (fix voice + UI fixes for PWA)');
 
-  // Mobile-only: wire the FAB + scrim to slide the orbits drawer in / out.
-
-  // Desktop is unaffected because the FAB and scrim are display:none
-
-  // outside the 560px media query.
-
-  (function setupOrbDrawer(){
-
-    const fab    = document.getElementById('orbColFab');
-
-    const scrim  = document.getElementById('orbColScrim');
-
-    const orbCol = document.getElementById('orbCol');
-
-    if (!fab || !scrim || !orbCol) return;
-
-    function openDrawer(){
-
-      orbCol.classList.add('open');
-
-      scrim.classList.add('show');
-
-      fab.classList.add('is-hidden');
-
-    }
-
-    function closeDrawer(){
-
-      orbCol.classList.remove('open');
-
-      scrim.classList.remove('show');
-
-      fab.classList.remove('is-hidden');
-
-    }
-
-    fab.addEventListener('click', e => {
-
-      e.preventDefault();
-
-      if (orbCol.classList.contains('open')) closeDrawer(); else openDrawer();
-
-    });
-
-    scrim.addEventListener('click', closeDrawer);
-
-    document.addEventListener('keydown', e => {
-
-      if (e.key === 'Escape' && orbCol.classList.contains('open')) closeDrawer();
-
-    });
-
-  })();
+  // Mobile orbit drawer removed per user request.
 
   // PWA: FORCE UNREGISTER OLD SERVICE WORKERS
   // The old service worker was caching stale builds. We unregister it
@@ -17006,24 +16954,7 @@
 
   document.querySelectorAll('.tb[data-page]').forEach(b => { b.addEventListener('click', () => setPage(b.dataset.page)); });
 
-  // Inline orbits FAB (PWA taskbar) — opens the orbits drawer just like the floating FAB.
-  (function(){
-    const fabInline = document.getElementById('orbColFabInline');
-    const orbCol = document.getElementById('orbCol');
-    const scrim = document.getElementById('orbColScrim');
-    if (fabInline && orbCol && scrim) {
-      fabInline.addEventListener('click', function(e){
-        e.preventDefault();
-        if (orbCol.classList.contains('open')){
-          orbCol.classList.remove('open');
-          scrim.classList.remove('show');
-        } else {
-          orbCol.classList.add('open');
-          scrim.classList.add('show');
-        }
-      });
-    }
-  })();
+  // Inline orbits FAB removed per user request.
 
   // DM back button — returns to conversation list on mobile
   (function(){

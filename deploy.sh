@@ -254,9 +254,10 @@ server {
     }
 
     location /uploads/ {
-        proxy_pass http://127.0.0.1:4000/uploads/;
-        proxy_set_header Host \$host;
+        alias $INSTALL_DIR/server/uploads/;
         expires 7d;
+        add_header Cache-Control "public, max-age=604800";
+        try_files \$uri =404;
     }
 }
 EOF
