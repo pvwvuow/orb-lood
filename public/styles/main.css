@@ -91,7 +91,7 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 .grain{position:fixed;inset:0;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");pointer-events:none;z-index:1}
 
-.device-frame{width:min(100vw, calc(100vh * 14 / 9));height:100vh;max-width:100vw;max-height:100vh;display:flex;flex-direction:column;position:relative;z-index:2;overflow:hidden}
+.device-frame{width:min(100vw, calc(100vh * 14 / 9));height:100vh;height:100dvh;max-width:100vw;max-height:100vh;max-height:100dvh;display:flex;flex-direction:column;position:relative;z-index:2;overflow:hidden}
 
 .glass-panel{background:var(--glass);backdrop-filter:blur(40px) saturate(150%);-webkit-backdrop-filter:blur(40px) saturate(150%);border-radius:18px;border:1px solid var(--gb);box-shadow:inset 0 1px 0 var(--tint-4),0 20px 40px rgba(0,0,0,0.4);position:relative;overflow:hidden}
 
@@ -2281,9 +2281,13 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 .ws-channel-empty i{display:block;margin:0 auto 12px;width:36px;height:36px;color:var(--accent);opacity:0.7}
 
-.ws-msg{display:flex;gap:10px;align-items:flex-start;padding:7px 8px;border-radius:8px;position:relative;transition:background 0.15s}
+.ws-msg{display:flex;gap:10px;align-items:flex-start;padding:7px 12px;border-radius:10px;position:relative;transition:background 0.15s}
 
 .ws-msg:hover{background:var(--tint-1)}
+
+.ws-msg.grouped{padding-top:2px}
+
+.ws-msg.grouped .ws-msg-av{visibility:hidden;width:34px;height:0;min-height:0}
 
 .ws-msg-av{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-weight:600;font-size:0.78rem;flex-shrink:0;background:var(--av,linear-gradient(135deg,#6366f1,#1e1b4b));cursor:pointer;transition:transform 0.15s,box-shadow 0.15s}
 
@@ -2297,9 +2301,15 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 .ws-msg-time{font-family:'Space Mono','Vazirmatn',monospace;font-size:0.5rem;color:var(--t3);letter-spacing:1px}
 
-.ws-msg-text{font-size:0.82rem;color:var(--t1);line-height:1.45;word-wrap:break-word}
+.ws-msg-time-inline{font-family:'Space Mono','Vazirmatn',monospace;font-size:0.45rem;color:var(--t3);letter-spacing:0.5px;margin-top:2px;opacity:0;transition:opacity 0.15s}
 
-.ws-msg-text.deleted{color:var(--t3);font-style:italic;opacity:0.6}
+.ws-msg:hover .ws-msg-time-inline{opacity:1}
+
+.ws-msg-text{font-size:0.82rem;color:var(--t1);line-height:1.45;word-wrap:break-word;padding:6px 10px;background:var(--tint-1);border-radius:12px;border-top-left-radius:4px;display:inline-block;max-width:100%}
+
+.ws-msg[data-mine="1"] .ws-msg-text{background:rgba(91,33,182,0.15);border-top-left-radius:12px;border-top-right-radius:4px}
+
+.ws-msg-text.deleted{color:var(--t3);font-style:italic;opacity:0.6;background:transparent;padding:4px 0}
 
 .ws-msg-text.image-msg{padding:0;background:transparent;border:none;margin-top:4px;max-width:340px}
 
@@ -2313,7 +2323,7 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 .ws-msg-actions{position:absolute;top:-10px;right:10px;display:flex;gap:2px;background:var(--panel);border:1px solid var(--tint-5);border-radius:8px;padding:3px;box-shadow:0 6px 18px rgba(0,0,0,0.5);opacity:0;pointer-events:none;transition:opacity 0.12s,transform 0.12s;transform:translateY(4px)}
 
-.ws-msg:hover .ws-msg-actions{opacity:1;pointer-events:all;transform:translateY(0)}
+.ws-msg:hover .ws-msg-actions,.ws-msg.actions-open .ws-msg-actions{opacity:1;pointer-events:all;transform:translateY(0)}
 
 .ws-msg-act{width:26px;height:26px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--t2);background:transparent;transition:all 0.12s}
 
@@ -4002,7 +4012,7 @@ select.sm-input option{background:var(--panel);color:var(--t1);padding:6px 10px}
 
 @media (max-width:560px){
 
-  .device-frame{width:100vw;height:100vh}
+  .device-frame{width:100vw;height:100vh;height:100dvh}
 
   .app{padding:0;gap:0;flex-direction:column}
 
@@ -4072,12 +4082,28 @@ select.sm-input option{background:var(--panel);color:var(--t1);padding:6px 10px}
   html,body{overflow:hidden;position:fixed;width:100%;height:100%}
   .device-frame{width:100vw;height:100vh;height:100dvh;border-radius:0}
   .app.glass-panel{border-radius:0;border:none}
-  .taskbar{padding-left:max(12px, env(safe-area-inset-left, 0px));padding-right:max(12px, env(safe-area-inset-right, 0px))}
+  .taskbar{padding-left:max(12px, env(safe-area-inset-left, 0px));padding-right:max(12px, env(safe-area-inset-right, 0px));padding-bottom:calc(6px + env(safe-area-inset-bottom, 0px))}
   .page-header{padding-top:env(safe-area-inset-top, 0px)}
 }
 
 @media (display-mode: standalone) and (max-width:560px) {
   .orb-col-fab-inline{display:flex}
+}
+
+/* ---- PWA Install Banner ---- */
+.pwa-install-banner{display:flex;align-items:center;gap:10px;padding:10px 14px;background:linear-gradient(90deg,rgba(91,33,182,0.25),rgba(185,28,74,0.15));border-top:1px solid var(--tint-4);backdrop-filter:blur(12px)}
+.pwa-install-icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;flex-shrink:0}
+.pwa-install-info{flex:1;min-width:0}
+.pwa-install-title{font-size:0.78rem;font-weight:700;color:var(--t1);letter-spacing:0.3px}
+.pwa-install-sub{font-size:0.65rem;color:var(--t3);margin-top:1px}
+.pwa-install-btn{padding:6px 14px;border-radius:8px;background:var(--accent);color:#fff;font-size:0.7rem;font-weight:700;letter-spacing:0.5px;white-space:nowrap;transition:opacity 0.2s}
+.pwa-install-btn:hover{opacity:0.85}
+.pwa-install-close{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--t3);transition:background 0.2s}
+.pwa-install-close:hover{background:var(--tint-4)}
+
+/* In standalone mode, hide the install banner (already installed) */
+@media (display-mode: standalone) {
+  .pwa-install-banner{display:none!important}
 }
 
 

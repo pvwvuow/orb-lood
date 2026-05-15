@@ -13,7 +13,7 @@
 
   // bundle or the fresh one.
 
-  console.log('[orblood] client build 2026-05-16-d (hotfix: PWA bar, DMs, WS stability)');
+  console.log('[orblood] client build 2026-05-16-e (hotfix: PWA install, DMs, voice, UI)');
 
   // Mobile orbit drawer removed per user request.
 
@@ -49,6 +49,55 @@
     });
   }
   */
+
+  // ============== PWA INSTALL PROMPT ==============
+  // Capture the beforeinstallprompt event so we can show a custom install
+  // button. On iOS Safari this event doesn't fire, so we detect iOS and
+  // show a manual "Add to Home Screen" instruction instead.
+  let _deferredInstallPrompt = null;
+  let _pwaInstalled = window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone === true;
+
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    _deferredInstallPrompt = e;
+    _showInstallBanner();
+  });
+
+  window.addEventListener('appinstalled', () => {
+    _pwaInstalled = true;
+    _deferredInstallPrompt = null;
+    _hideInstallBanner();
+  });
+
+  function _isIos(){
+    return /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+  }
+
+  function _showInstallBanner(){
+    const el = document.getElementById('pwaInstallBanner');
+    if (el && !_pwaInstalled) el.style.display = 'flex';
+  }
+
+  function _hideInstallBanner(){
+    const el = document.getElementById('pwaInstallBanner');
+    if (el) el.style.display = 'none';
+  }
+
+  async function triggerPwaInstall(){
+    if (_deferredInstallPrompt){
+      _deferredInstallPrompt.prompt();
+      const result = await _deferredInstallPrompt.userChoice;
+      if (result.outcome === 'accepted') _pwaInstalled = true;
+      _deferredInstallPrompt = null;
+      _hideInstallBanner();
+    } else if (_isIos()){
+      // iOS doesn't support beforeinstallprompt — show instructions
+      showToast('Tap the Share button ⬆ then "Add to Home Screen" to install ORBLOOD as an app.', 'info', 6000);
+    } else {
+      showToast('Open this page in Chrome or Safari to install the app.', 'info', 4000);
+    }
+  }
 
   // ============== STARS ==============
 
@@ -1820,7 +1869,10 @@
 
       }).catch(()=>{});
 
-      voice.start(sid, ch).catch(()=>{});
+      voice.start(sid, ch).catch(e => {
+        console.error('[voice] start failed:', e && e.message);
+        showToast('Voice connection failed. Check microphone permissions.', 'warn');
+      });
 
       // Ping is a voice-call-only metric (call quality indicator), so
 
@@ -2250,19 +2302,16 @@
 
     invalidateDmCache(key);
 
-    if (!conv._historyFetched && backend.isConfigured() && key && key !== 'saved'){
+    if (backend.isConfigured() && key && key !== 'saved'){
 
-      // History not yet loaded — check if we already know there are no
-
-      // messages for this thread. If messages[key] is empty (no preview,
-
-      // no WS push), show the empty-thread copy immediately instead of
-
-      // a skeleton that will just flash away when the fetch returns [].
+      // Always render what we have locally FIRST (instant feedback), then
+      // re-fetch from backend to ensure we have the latest messages.
+      // This fixes the bug where switching between DM contacts showed
+      // stale messages from the previous conversation.
 
       const localMsgs = messages[key] || [];
 
-      if (localMsgs.length === 0){
+      if (localMsgs.length === 0 && !conv._historyFetched){
 
         // Show empty state directly — no skeleton flicker for brand-new threads.
 
@@ -2296,7 +2345,12 @@
 
     refreshIcons();
 
-    setTimeout(()=>{ const inp = document.getElementById('dmInput'); if (inp) inp.focus(); }, 100);
+    // Only auto-focus the compose input on desktop. On mobile/PWA the
+    // virtual keyboard popping open immediately is annoying — the user
+    // should tap the input deliberately when they want to type.
+    if (!('ontouchstart' in window || navigator.maxTouchPoints > 0)){
+      setTimeout(()=>{ const inp = document.getElementById('dmInput'); if (inp) inp.focus(); }, 100);
+    }
 
     // Lazy-load DM history from the backend so messages survive reloads.
 
@@ -6092,6 +6146,8 @@
 
     } else {
 
+      let lastUser = null;
+
       msgs.forEach(m => {
 
         if (!m.id) m.id = Date.now()+Math.floor(Math.random()*1000);
@@ -6099,6 +6155,10 @@
         const avRes = resolveUserAvatar(m.user);
 
         const isMine = m.user === selfProfile.name;
+
+        const grouped = lastUser === m.user;
+
+        lastUser = m.user;
 
         let replyPrev = '';
 
@@ -6154,13 +6214,17 @@
 
         const selCls = (chSelectMode && chSelectedIds.has(String(m.id))) ? ' is-selected' : '';
 
-        html += '<div class="ws-msg'+selCls+'" data-ch-msg="'+m.id+'" data-mine="'+(isMine?'1':'0')+'"><div class="ws-msg-av" style="background:'+avRes.bg+'">'+(avRes.isImage?'':escapeHtml(avRes.text))+'</div>'+
+        const groupedCls = grouped ? ' grouped' : '';
+
+        html += '<div class="ws-msg'+selCls+groupedCls+'" data-ch-msg="'+m.id+'" data-mine="'+(isMine?'1':'0')+'"><div class="ws-msg-av" style="background:'+avRes.bg+'">'+(avRes.isImage?'':escapeHtml(avRes.text))+'</div>'+
 
           '<div class="ws-msg-body">'+
 
-            '<div class="ws-msg-head"><span class="ws-msg-name">'+escapeHtml(m.user)+'</span><span class="ws-msg-time">'+escapeHtml(fmtMessageTime(m.time))+'</span></div>'+
+            (grouped ? '' : '<div class="ws-msg-head"><span class="ws-msg-name">'+escapeHtml(m.user)+'</span><span class="ws-msg-time">'+escapeHtml(fmtMessageTime(m.time))+'</span></div>')+
 
             replyPrev + body +
+
+            (grouped ? '<div class="ws-msg-time-inline">'+escapeHtml(fmtMessageTime(m.time))+'</div>' : '') +
 
           '</div>'+
 
@@ -8979,12 +9043,17 @@
 
       };
 
-    } else if (from && !conversations[k].uid){
-
+    } else if (from){
+      // Always sync the uid/peerId — if a user changed their handle or 
+      // there was stale data, this ensures the conversation stays mapped
+      // to the correct backend user id.
       conversations[k].uid = String(from);
-
       conversations[k].peerId = String(from);
-
+      // Also update name if the backend provided one (handles profile renames)
+      if (message.peerName && message.peerName !== k){
+        conversations[k].name = message.peerName;
+        conversations[k].initial = message.peerName.charAt(0).toUpperCase();
+      }
     }
 
     if (!messages[k]) messages[k] = [];
@@ -10008,6 +10077,18 @@
       }).then(x => x.json()).catch(()=>null);
 
       if (r && Array.isArray(r.iceServers) && r.iceServers.length) iceServers = r.iceServers;
+
+      // If no ICE servers came from the backend, add a minimal fallback
+      // set so at least same-network peers can connect via STUN.
+      if (!iceServers.length){
+        iceServers = [
+          { urls: ['stun:stun.l.google.com:19302'] },
+          { urls: ['stun:stun1.l.google.com:19302'] }
+        ];
+        // Without TURN, force-relay would prevent any connection.
+        forceRelay = false;
+        console.warn('[voice] No TURN servers configured — falling back to public STUN (P2P only)');
+      }
 
       // Server can opt out of force-relay (e.g. for non-filtered networks).
 
@@ -19958,6 +20039,20 @@
 
     }
 
+    // Touch-friendly toggle for channel messages: tapping the message text
+    // opens the action toolbar (on mobile where :hover doesn't work).
+    const msgTextTap = e.target.closest('.ws-msg-text, .ws-msg-body');
+    if (msgTextTap && !e.target.closest('.ws-msg-actions, .ws-msg-av, button, a, img')){
+      const row = msgTextTap.closest('.ws-msg[data-ch-msg]');
+      if (row && ('ontouchstart' in window || navigator.maxTouchPoints > 0)){
+        e.stopPropagation();
+        const wasOpen = row.classList.contains('actions-open');
+        document.querySelectorAll('.ws-msg.actions-open').forEach(r => r.classList.remove('actions-open'));
+        if (!wasOpen) row.classList.add('actions-open');
+        return;
+      }
+    }
+
     const btn = e.target.closest('[data-ch-action]'); if (!btn) return;
 
     const idRaw = btn.dataset.chId;
@@ -21939,7 +22034,7 @@
 
     const insideBubble = e.target.closest('.dm-bubble');
 
-    const insideMsgRow = e.target.closest('.dm-msg, .dm-bubble-hover-actions');
+    const insideMsgRow = e.target.closest('.dm-msg, .dm-bubble-hover-actions, .ws-msg, .ws-msg-actions');
 
     if (!insideBA && !insideBubble && document.getElementById('bubbleActions').classList.contains('show')) hideBubbleActions();
 
@@ -21956,6 +22051,8 @@
     if (!insideMsgRow){
 
       document.querySelectorAll('.dm-msg.actions-open').forEach(r => r.classList.remove('actions-open'));
+
+      document.querySelectorAll('.ws-msg.actions-open').forEach(r => r.classList.remove('actions-open'));
 
     }
 
@@ -21979,7 +22076,31 @@
 
   document.getElementById('dmMsgs').addEventListener('scroll', hideBubbleActions);
 
+  // Right-click (contextmenu) on desktop: show action toolbar on the message
+  document.getElementById('dmMsgs').addEventListener('contextmenu', e => {
+    const row = e.target.closest('.dm-msg[data-msg-row]');
+    if (!row) return;
+    // Don't override context menu on actual links/buttons
+    if (e.target.closest('a, button, .dm-bubble-hover-actions')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    document.querySelectorAll('.dm-msg.actions-open').forEach(r => r.classList.remove('actions-open'));
+    row.classList.add('actions-open');
+  });
+
+  // Right-click (contextmenu) on desktop for channel messages
+  document.getElementById('wsChannelMsgs').addEventListener('contextmenu', e => {
+    const row = e.target.closest('[data-ch-msg]');
+    if (!row) return;
+    if (e.target.closest('a, button, .ws-msg-actions')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    document.querySelectorAll('.ws-msg.actions-open').forEach(r => r.classList.remove('actions-open'));
+    row.classList.add('actions-open');
+  });
+
   // Long-press a DM bubble to enter selection mode and pre-select that message.
+  // Only on desktop (non-touch). On mobile/PWA, single-tap opens the action toolbar.
 
   attachLongPress(document.getElementById('dmMsgs'), '.dm-msg[data-msg-row]', el => {
 
@@ -21989,7 +22110,7 @@
 
     if (id) toggleDmSelect(id);
 
-  }, { delay: 500 });
+  }, { delay: 600 });
 
   attachLongPress(document.getElementById('wsChannelMsgs'), '[data-ch-msg]', el => {
 
@@ -22570,6 +22691,23 @@
   // ============== WEB VERSION BUTTONS (removed) ==============
   // Refresh button removed per user request.
   // Download button moved to Settings > Download app tab.
+
+  // ============== PWA INSTALL BUTTON EVENTS ==============
+  const _pwaInstallBtn = document.getElementById('pwaInstallBtn');
+  const _pwaInstallClose = document.getElementById('pwaInstallClose');
+  if (_pwaInstallBtn) _pwaInstallBtn.addEventListener('click', () => triggerPwaInstall());
+  if (_pwaInstallClose) _pwaInstallClose.addEventListener('click', () => _hideInstallBanner());
+
+  // Show install banner on mobile if not already installed
+  setTimeout(() => {
+    if (!_pwaInstalled && ('ontouchstart' in window || navigator.maxTouchPoints > 0)){
+      // On iOS the beforeinstallprompt never fires; show the banner anyway
+      // so users see the "install" option with manual instructions.
+      if (_isIos() || _deferredInstallPrompt){
+        _showInstallBanner();
+      }
+    }
+  }, 3000);
 
 })();
 
