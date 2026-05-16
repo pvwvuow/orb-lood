@@ -272,7 +272,15 @@
   // origin, in which case the SPA stores the base in localStorage under
   // the key the SPA itself uses. We mirror that lookup here so this page
   // can also probe a remote backend if that's how the user is set up.
-  const TOKEN_KEY = 'orblood_token';
+  //
+  // NOTE: the SPA writes its auth token under `orblood_token_v1` (see
+  // BACKEND_TOKEN_KEY in public/js/app.js). We MUST use the same key
+  // here, otherwise this page silently reports "not logged in" even
+  // when the user has just signed in — and skips every test that needs
+  // auth (voice/config, WebSocket, ICE/TURN). For backwards compat we
+  // also accept the older `orblood_token` key that earlier builds used.
+  const TOKEN_KEYS = ['orblood_token_v1', 'orblood_token'];
+  let TOKEN_KEY_USED = null;
   function backendBase(){
     // 1. Same-origin in production / nginx setups.
     // 2. localStorage override (dev / Electron) — same key the SPA uses.
@@ -282,13 +290,23 @@
     return location.origin + '/api';
   }
   function readToken(){
-    try { return localStorage.getItem(TOKEN_KEY) || null; } catch(_){ return null; }
+    for (const k of TOKEN_KEYS){
+      try {
+        const v = localStorage.getItem(k);
+        if (v) { TOKEN_KEY_USED = k; return v; }
+      } catch(_){}
+    }
+    TOKEN_KEY_USED = null;
+    return null;
   }
   setKv('envPageUrl',  location.href);
   setKv('envOrigin',   location.origin);
   setKv('envBackend',  backendBase());
-  setKv('envToken',    readToken() ? 'yes' : 'no (login first)',
-                       readToken() ? 'good' : 'warn');
+  // Trigger token read so TOKEN_KEY_USED is populated, then surface it.
+  const _tok = readToken();
+  setKv('envToken',
+    _tok ? ('yes (key: ' + TOKEN_KEY_USED + ')') : 'no (login first)',
+    _tok ? 'good' : 'warn');
   setKv('envUa',       navigator.userAgent);
   if (navigator.connection){
     const c = navigator.connection;
