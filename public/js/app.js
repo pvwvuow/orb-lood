@@ -10614,17 +10614,65 @@
 
       };
 
+      // Track candidate counts so we can paint a single, useful "summary"
+      // log when gathering completes. Without this the only signal that
+      // TURN is unreachable on a filtered network is a 30-40s silence
+      // followed by a bare "ICE gathering complete", which is useless
+      // for debugging.
+      const _candCounts = { host: 0, srflx: 0, prflx: 0, relay: 0, total: 0 };
+      // Watchdog: if forceRelay is on and we don't see a single relay
+      // candidate within 8s, we surface a clear warning. Chrome's TURN
+      // allocation timeout is ~30-40s, but the operator should not have
+      // to wait that long to know the TURN server is unreachable.
+      let _relayWatchdog = null;
+      if (forceRelay) {
+        _relayWatchdog = setTimeout(() => {
+          if (_candCounts.relay === 0) {
+            _vlog.warn('TURN allocation taking >8s — TURN server may be unreachable, blocked, or rejecting credentials. Peer:', peerName);
+            showToast('TURN server slow to respond — voice may fail.', 'warn');
+          }
+        }, 8000);
+      }
+
       pc.onicecandidate = ev => {
 
         if (ev.candidate){
 
-          _vlog.debug('Local ICE candidate:', ev.candidate.type, ev.candidate.protocol, ev.candidate.address ? ev.candidate.address.replace(/\d+\.\d+$/, 'x.x') : '(mdns)');
+          const c = ev.candidate;
+          const t = c.type || '?';
+          if (_candCounts[t] !== undefined) _candCounts[t]++;
+          _candCounts.total++;
+          // info-level so we always see whether ICE actually emitted
+          // candidates without needing to flip __voiceDebug first.
+          _vlog.info('Local ICE candidate →', peerName, '|', t, c.protocol, c.address ? c.address.replace(/\d+\.\d+$/, 'x.x') : '(mdns)', '| port:', c.port);
 
           _signal(peerName, { kind:'ice', candidate: ev.candidate });
 
         } else {
 
-          _vlog.info('ICE gathering complete for', peerName);
+          if (_relayWatchdog) { clearTimeout(_relayWatchdog); _relayWatchdog = null; }
+          // Always-on summary — gives operators a single line that tells
+          // them whether ICE actually produced anything useful.
+          _vlog.info('ICE gathering complete for', peerName,
+            '| total:', _candCounts.total,
+            '| host:', _candCounts.host,
+            '| srflx:', _candCounts.srflx,
+            '| relay:', _candCounts.relay);
+
+          if (forceRelay && _candCounts.relay === 0) {
+            // Hard error: forceRelay was set, gathering finished, and
+            // we have ZERO relay candidates. The connection cannot
+            // proceed. This is the loudest possible signal that TURN
+            // is broken — auth mismatch, port blocked by ISP/CDN,
+            // coturn down, or wrong external-ip.
+            _vlog.error('NO RELAY CANDIDATES with forceRelay=true — call WILL FAIL. Check: (1) TURN credentials match coturn config, (2) TURN URL/port reachable from this network, (3) coturn external-ip matches VPS public IP, (4) DNS does not point through a CDN that blocks UDP/non-HTTP TLS.');
+            showToast('Voice failed: TURN server unreachable. See console for details.', 'warn');
+            setVoiceStatus('failed');
+          } else if (!forceRelay && _candCounts.total === 0) {
+            _vlog.error('NO ICE CANDIDATES at all — getUserMedia produced no usable network paths. Peer:', peerName);
+            showToast('Voice failed: no network path available.', 'warn');
+            setVoiceStatus('failed');
+          }
 
         }
 
@@ -10683,6 +10731,57 @@
           }
 
         } else if (state === 'failed' || state === 'disconnected'){
+
+          // One-shot diagnostic dump on the first failure for this peer:
+          // get the full ICE picture (remote candidates received, what
+          // candidate-pairs were tried, why none succeeded). Without this
+          // a "DISCONNECTED 67ms after CHECKING" looks identical for
+          // four different root causes (no remote candidates, blocked
+          // TURN, auth mismatch, NAT-rebind). The dump unambiguously
+          // tells them apart.
+          if (!rec._statsDumped) {
+            rec._statsDumped = true;
+            try {
+              pc.getStats(null).then(report => {
+                let localCount = 0, remoteCount = 0;
+                const pairs = [];
+                const remotes = [];
+                report.forEach(s => {
+                  if (s.type === 'local-candidate') {
+                    localCount++;
+                  } else if (s.type === 'remote-candidate') {
+                    remoteCount++;
+                    remotes.push((s.candidateType || '?') + ' ' + (s.protocol || '?') + ' ' + (s.address || s.ip || '?') + ':' + (s.port || '?'));
+                  } else if (s.type === 'candidate-pair') {
+                    pairs.push({
+                      state: s.state,
+                      nominated: !!s.nominated,
+                      writable: !!s.writable,
+                      requestsSent: s.requestsSent || 0,
+                      responsesReceived: s.responsesReceived || 0,
+                      bytesSent: s.bytesSent || 0,
+                      bytesReceived: s.bytesReceived || 0
+                    });
+                  }
+                });
+                _vlog.group('ICE diagnostic dump for ' + peerName + ' (' + state + ')');
+                _vlog.info('Local candidates in PC:', localCount);
+                _vlog.info('Remote candidates in PC:', remoteCount, remoteCount ? '→ ' + remotes.join(' | ') : '(NONE — peer never sent any, or signaling relay is dropping them)');
+                _vlog.info('Candidate pairs:', pairs.length);
+                pairs.forEach((p, i) => {
+                  _vlog.info('  pair[' + i + ']:', p.state, p.nominated ? '(nominated)' : '', '| reqSent:', p.requestsSent, 'respRecv:', p.responsesReceived, '| bytes ↑/↓:', p.bytesSent + '/' + p.bytesReceived);
+                });
+                if (remoteCount === 0) {
+                  _vlog.error('ROOT CAUSE: no remote candidates ever reached this PC. The other peer either never gathered relay candidates OR the WS voice-signal relay dropped them. Check the OTHER peer\'s console for "Local ICE candidate →" lines and check the server log for "[ws] voice-signal" relay messages.');
+                } else if (pairs.length === 0) {
+                  _vlog.error('ROOT CAUSE: remote candidates arrived but no candidate-pair was formed. iceTransportPolicy filtering or remote candidate corruption.');
+                } else if (!pairs.some(p => p.responsesReceived > 0)) {
+                  _vlog.error('ROOT CAUSE: candidate pairs exist but ZERO STUN responses received. The TURN relays are unreachable from each other (firewall between coturn instances, or coturn refusing peer-to-peer relay traffic — check allow-loopback-peers).');
+                }
+                _vlog.groupEnd();
+              }).catch(e => _vlog.warn('getStats() failed:', e && e.message));
+            } catch (e) { _vlog.warn('getStats() threw:', e && e.message); }
+          }
 
           // فقط طرف impolite restart می‌کنه که دو طرف با هم نجنگن
 
@@ -11055,7 +11154,13 @@
 
       }
 
-      _vlog.debug('Signaling', signal.kind, '→', to);
+      // info-level: paired with "Incoming ICE candidate ←" on the
+      // remote side, this gives an unambiguous record of what was
+      // SENT versus what was RECEIVED across the WS relay.
+      const sigDetail = signal.kind === 'ice'
+        ? (signal.candidate && signal.candidate.candidate ? signal.candidate.candidate.split(' ')[7] : 'end-of-candidates')
+        : (signal.sdp && signal.sdp.type) || '?';
+      _vlog.info('Signaling →', to, '| kind:', signal.kind, '| detail:', sigDetail);
 
       wsSend({ type:'voice-signal', to, signal });
 
@@ -11226,7 +11331,19 @@
 
       const rec = peers.get(peerName);
 
-      if (!rec) return;
+      if (!rec) {
+        _vlog.warn('Incoming ICE candidate for unknown peer:', peerName, '— dropping');
+        return;
+      }
+
+      // Surface every incoming ICE at info level. This is the single
+      // most useful diagnostic when a call sticks at CHECKING/DISCONNECTED:
+      // if you see Local ICE candidates flowing out but no "Incoming ICE"
+      // here, the WS relay is dropping the message somewhere between the
+      // two clients (server lookup miss, peer not in map, etc.).
+      const parts = candidate && candidate.candidate ? candidate.candidate.split(' ') : [];
+      const cType = parts[7] || (candidate && candidate.candidate === '' ? 'end-of-candidates' : '?');
+      _vlog.info('Incoming ICE candidate ←', peerName, '| type:', cType, '| hasRemoteDesc:', rec.hasRemoteDesc);
 
       // Queue ICE that arrives before remoteDescription — addIceCandidate
 
@@ -11238,14 +11355,25 @@
 
         rec.pendingIce.push(candidate);
 
-        _vlog.debug('Queuing remote ICE candidate (no remote desc yet) | peer:', peerName);
+        _vlog.info('Queuing remote ICE candidate (no remote desc yet) | peer:', peerName, '| queue size:', rec.pendingIce.length);
 
         return;
 
       }
 
-      try { await rec.pc.addIceCandidate(candidate); _vlog.debug('Added remote ICE candidate | peer:', peerName, '| type:', candidate.candidate ? candidate.candidate.split(' ')[7] : '?'); }
-
+      try {
+        await rec.pc.addIceCandidate(candidate);
+        // info-level: lets us confirm in production logs whether the
+        // remote side's ICE candidates are actually arriving and being
+        // applied. The peer / type / protocol are exactly what we need
+        // to spot signaling-relay drops vs. addIceCandidate failures.
+        const parts = candidate && candidate.candidate ? candidate.candidate.split(' ') : [];
+        const cType = parts[7] || '?';
+        const cProto = parts[2] || '?';
+        const cAddr = parts[4] || '?';
+        const cPort = parts[5] || '?';
+        _vlog.info('Added remote ICE candidate ←', peerName, '|', cType, cProto, cAddr + ':' + cPort);
+      }
       catch(e){ _vlog.warn('addIceCandidate failed for', peerName, ':', e && e.message); }
 
     }
@@ -11516,17 +11644,32 @@
 
       handleSignal(msg){
 
-        if (!serverId || !channelId) return;
+        if (!serverId || !channelId) {
+          _vlog.warn('Ignoring voice-signal — not in a voice channel | serverId:', serverId, 'channelId:', channelId);
+          return;
+        }
 
         const peerName = (msg.fromName || '').trim();
 
-        if (!peerName) return;
+        if (!peerName) {
+          _vlog.warn('Ignoring voice-signal — no fromName in envelope:', msg);
+          return;
+        }
 
         const sig = msg.signal;
 
-        if (!sig) return;
+        if (!sig) {
+          _vlog.warn('Ignoring voice-signal — no signal payload from', peerName);
+          return;
+        }
 
-        _vlog.debug('Incoming signal:', sig.kind, '| from:', peerName);
+        // Promoted to info: this is the ground-truth "yes the WS relay
+        // delivered something to us" event. Pair it with the Signaling →
+        // line on the sender's console to see whether any are dropped.
+        const detail = sig.kind === 'ice'
+          ? (sig.candidate && sig.candidate.candidate ? sig.candidate.candidate.split(' ')[7] : 'end-of-candidates')
+          : (sig.sdp && sig.sdp.type) || '?';
+        _vlog.info('Incoming voice-signal ←', peerName, '| kind:', sig.kind, '| detail:', detail);
 
         if (sig.kind === 'sdp')  _onSdp(peerName, sig.sdp);
 
