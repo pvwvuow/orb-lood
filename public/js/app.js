@@ -13,28 +13,42 @@
 
   // bundle or the fresh one.
 
-  console.log('[orblood] client build 2026-05-16-f (hotfix: DM switch, settings btn, voice diag, PWA bar)');
+  console.log('[orblood] client build 2026-05-16-i (PWA: full-screen install + skeleton DM loader + offline DM history fix + organized settings menu)');
 
   // Mobile orbit drawer removed per user request.
 
-  // PWA: FORCE UNREGISTER OLD SERVICE WORKERS
-  // The old service worker was caching stale builds. We unregister it
-  // on every page load to ensure users always get fresh content.
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.getRegistrations().then(registrations => {
-      registrations.forEach(reg => {
-        reg.unregister();
-        console.log('[orblood] unregistered old service worker');
-      });
-    }).catch(() => {});
-  }
-
-  // Service worker temporarily disabled to fix caching issues
-  // Will re-enable with better cache strategy in future update
-  /*
+  // PWA: register the service worker so the app installs as a real
+  // standalone app (with offline shell + install prompt) instead of
+  // just bookmarking the URL. The previous build force-unregistered
+  // SWs to escape a bad cache; that left the PWA installable in name
+  // only — Chrome wouldn't fire `beforeinstallprompt`, iOS wouldn't
+  // treat the home-screen icon as a real app, and the splash never
+  // showed. We bumped the cache name in /sw.js so any leftover stale
+  // shell is purged on first load of this build.
   if ('serviceWorker' in navigator && window.isSecureContext){
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        .then(reg => {
+          // Ask any waiting SW to take over immediately so the user
+          // doesn't have to close+reopen the tab to pick up a fresh
+          // build after deploy.
+          if (reg && reg.waiting){
+            try { reg.waiting.postMessage({ type:'SKIP_WAITING' }); } catch(_){}
+          }
+          // Watch for a new worker that finishes install while the
+          // page is open.
+          if (reg){
+            reg.addEventListener('updatefound', () => {
+              const nw = reg.installing;
+              if (!nw) return;
+              nw.addEventListener('statechange', () => {
+                if (nw.state === 'installed' && navigator.serviceWorker.controller){
+                  try { nw.postMessage({ type:'SKIP_WAITING' }); } catch(_){}
+                }
+              });
+            });
+          }
+        })
         .catch(err => console.warn('[orblood] sw register failed', err && err.message));
     });
 
@@ -48,7 +62,6 @@
       setTimeout(() => location.reload(), 50);
     });
   }
-  */
 
   // ============== PWA INSTALL PROMPT ==============
   // Capture the beforeinstallprompt event so we can show a custom install
@@ -2202,6 +2215,23 @@
 
   }
 
+  // Skeleton placeholder painted into #dmMsgs while we wait for
+  // backend.dms.list to resolve. Mirrors the .sk-dm-bubble styles
+  // (defined in main.css alongside the home/orbits skeletons) and
+  // alternates them/me sides so the empty state actually looks like a
+  // chat that's about to appear. Keeping this server-driven prevents
+  // the bubbles from shifting around when the real history lands.
+  function _dmSkeletonHtml(){
+    return ''
+      + '<div class="dm-skeleton-thread" aria-hidden="true">'
+      +   '<div class="sk-dm-bubble them"><span class="sk sk-line sk-l-w70"></span><span class="sk sk-line sk-l-w50"></span></div>'
+      +   '<div class="sk-dm-bubble me"><span class="sk sk-line sk-l-w60"></span></div>'
+      +   '<div class="sk-dm-bubble them"><span class="sk sk-line sk-l-w40"></span></div>'
+      +   '<div class="sk-dm-bubble me"><span class="sk sk-line sk-l-w70"></span><span class="sk sk-line sk-l-w30"></span></div>'
+      +   '<div class="sk-dm-bubble them"><span class="sk sk-line sk-l-w50"></span></div>'
+      + '</div>';
+  }
+
   function openConversation(key){
 
     if (!conversations[key]) return;
@@ -2332,18 +2362,21 @@
 
     if (backend.isConfigured() && key && key !== 'saved'){
 
-      // Always show the loading spinner first. Even if messages[key] has
-      // entries, those may be stale from a prior session or a snapshot
-      // preview that was overwritten when the user sent a new message in
-      // a *different* conversation. The backend round-trip below fills in
-      // the real history within a few hundred ms; the spinner makes the
-      // switch feel instant and avoids the "previous chat is showing"
-      // perception when the cached array happens to carry stale rows.
+      // Always show the loading skeleton first. Even if messages[key]
+      // has entries, those may be stale from a prior session or a
+      // snapshot preview that was overwritten when the user sent a new
+      // message in a *different* conversation. The backend round-trip
+      // below fills in the real history within a few hundred ms; the
+      // skeleton makes the switch feel instant and avoids the
+      // "previous chat is showing" perception when the cached array
+      // happens to carry stale rows.
+      //
+      // Use the same .sk-dm-bubble skeleton as the rest of the app
+      // (Home, Orbits, DM list) instead of a plain "Loading messages…"
+      // string — the user explicitly asked for the skeleton style and
+      // it gives a better perceived-performance signal anyway.
 
-      _msgsEl.innerHTML = '<div class="dm-loading-thread">'
-        + '<div class="dm-loading-spinner"></div>'
-        + '<div class="dm-loading-text">Loading messages...</div>'
-        + '</div>';
+      _msgsEl.innerHTML = _dmSkeletonHtml();
 
       // Reset the historyFetched flag for THIS key so the fetch path below
       // always runs (don't let a stale flag from a previous session skip
@@ -2385,7 +2418,19 @@
 
     if (backend.isConfigured() && key && conversations[key]){
 
-      const peerKey = conversations[key].isSaved ? 'saved' : key;
+      // Resolve the *canonical* peer key for the backend. When the
+      // conversation was created from a profile lookup of a non-friend
+      // (synthetic '__u_<name>' keys) the local key is not a real
+      // handle, but conv.handle holds the actual one. Using the raw
+      // local key would 404 the GET /api/dms/:peerKey for offline
+      // contacts who aren't already a friend — which was the reason
+      // history "didn't load until you sent a message" for offline
+      // peers. Online peers happened to work because the WS push
+      // re-keyed their conversation entry to the real handle on the
+      // first presence event.
+      const peerKey = conversations[key].isSaved
+        ? 'saved'
+        : (resolvePeerKeyForBackend(key) || key);
 
       backend.dms.list(peerKey).then(r => {
 

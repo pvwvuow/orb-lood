@@ -32,7 +32,15 @@
 
 <meta name="application-name" content="ORBLOOD">
 
-<link rel="apple-touch-icon" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/icon-192.svg">
+
+<link rel="apple-touch-icon" sizes="192x192" href="/icon-192.svg">
+
+<link rel="apple-touch-icon" sizes="512x512" href="/icon-512.svg">
+
+<link rel="icon" type="image/svg+xml" sizes="any" href="/icon-512.svg">
+
+<link rel="mask-icon" href="/icon-maskable-512.svg" color="#b91c4a">
 
 <!-- Backend API base URL. Leave commented out for offline / demo mode.
 
@@ -58,17 +66,17 @@
 
 <meta property="og:image" content="https://jtrrmltzqcfjkvribmwe.supabase.co/storage/v1/object/public/enter/enter-og-image-square-1.jpeg" />
 
-<script src="/vendor/lucide.js?v=20260516e"></script>
+<script src="/vendor/lucide.js?v=20260516h"></script>
 
-<link rel="stylesheet" href="/styles/themes/orblood-dark.css?v=20260516e" />
+<link rel="stylesheet" href="/styles/themes/orblood-dark.css?v=20260516h" />
 
-<link rel="stylesheet" href="/styles/themes/marble-light.css?v=20260516e" />
+<link rel="stylesheet" href="/styles/themes/marble-light.css?v=20260516h" />
 
-<link rel="stylesheet" href="/styles/themes/poison-green.css?v=20260516e" />
+<link rel="stylesheet" href="/styles/themes/poison-green.css?v=20260516h" />
 
-<link rel="stylesheet" href="/styles/themes/aurora.css?v=20260516e" />
+<link rel="stylesheet" href="/styles/themes/aurora.css?v=20260516h" />
 
-<link rel="stylesheet" href="/styles/main.css?v=20260516e" />
+<link rel="stylesheet" href="/styles/main.css?v=20260516h" />
 
 <!-- Customization packs. Each pack is a self-contained CSS file under
 
@@ -78,7 +86,7 @@
 
      the pack id stored as its custom_style. -->
 
-<link rel="stylesheet" href="/styles/packs/aurora.css?v=20260516e" />
+<link rel="stylesheet" href="/styles/packs/aurora.css?v=20260516h" />
 
 <script>
 
@@ -972,15 +980,15 @@
 
           <div class="settings-side">
 
-            <div class="settings-side-h">SETTINGS</div>
+            <div class="settings-side-h">ACCOUNT</div>
 
             <button class="settings-side-item active" data-st-tab="profile" type="button"><i data-lucide="user"></i>Profile</button>
 
-            <button class="settings-side-item" data-st-tab="account" type="button"><i data-lucide="key-round"></i>Account</button>
+            <button class="settings-side-item" data-st-tab="account" type="button"><i data-lucide="key-round"></i>Login</button>
 
             <button class="settings-side-item" data-st-tab="privacy" type="button"><i data-lucide="shield-check"></i>Privacy</button>
 
-            <div class="settings-side-h" style="margin-top:8px">FRIENDS</div>
+            <div class="settings-side-h">FRIENDS</div>
 
             <button class="settings-side-item" data-st-tab="friends" type="button"><i data-lucide="users"></i>Friends<span class="badge" id="settingsFriendsCount" style="display:none">0</span></button>
 
@@ -990,19 +998,23 @@
 
             <button class="settings-side-item" data-st-tab="blocked" type="button"><i data-lucide="shield-off"></i>Blocked<span class="badge" id="settingsBlockedCount" style="display:none">0</span></button>
 
-            <div class="settings-side-h" style="margin-top:8px">SYSTEM</div>
+            <div class="settings-side-h">APPEARANCE</div>
 
-            <button class="settings-side-item" data-st-tab="appearance" type="button"><i data-lucide="palette"></i>Appearance</button>
+            <button class="settings-side-item" data-st-tab="appearance" type="button"><i data-lucide="palette"></i>Theme</button>
 
             <button class="settings-side-item" data-st-tab="notif" type="button"><i data-lucide="bell"></i>Notifications</button>
 
-            <button class="settings-side-item" data-st-action="change-server" type="button" style="display:none" id="settingsChangeServer"><i data-lucide="server"></i>Change server</button>
+            <div class="settings-side-h">VOICE &amp; APPS</div>
 
             <button class="settings-side-item" data-st-action="voice" type="button"><i data-lucide="mic"></i>Voice &amp; audio<i data-lucide="external-link" style="margin-left:auto;width:11px;height:11px;opacity:0.6"></i></button>
 
             <button class="settings-side-item" data-st-tab="overlay" type="button"><i data-lucide="picture-in-picture-2"></i>Game overlay</button>
 
             <button class="settings-side-item" data-st-tab="download" type="button"><i data-lucide="download"></i>Download app</button>
+
+            <div class="settings-side-h">SYSTEM</div>
+
+            <button class="settings-side-item" data-st-action="change-server" type="button" style="display:none" id="settingsChangeServer"><i data-lucide="server"></i>Change server</button>
 
           </div>
 
@@ -2739,7 +2751,7 @@
 
 </div>
 
-<script src="/js/app.js?v=20260516h" defer></script>
+<script src="/js/app.js?v=20260516i" defer></script>
 
 </body>
 
