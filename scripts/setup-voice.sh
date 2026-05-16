@@ -71,9 +71,15 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # Port-range split between the two coturn instances. Sharing the same range
 # leads to a race where each instance allocates ports the other doesn't know
 # about, which manifests as ICE going CHECKING → DISCONNECTED in <1s.
+# Relay UDP port range. With instance #1 disabled (the default), instance #2
+# owns the full ephemeral range. If you set KEEP_INSTANCE_1=1 to bring
+# instance #1 back, the two ranges still overlap on the wire — and the
+# cross-instance relay bug returns. The split below is kept only so the
+# config files stay valid for that opt-in case; in practice instance #2
+# now uses the same 49152-65535 range that the kernel would pick anyway.
 RELAY_LO_MIN=49152
 RELAY_LO_MAX=57343
-RELAY_HI_MIN=57344
+RELAY_HI_MIN=49152
 RELAY_HI_MAX=65535
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -256,7 +262,7 @@ action_sniff() {
     "udp portrange 3478-3478 or tcp portrange 3478-3478 \
      or udp portrange 5349-5349 or tcp portrange 5349-5349 \
      or udp portrange 443-443  or tcp portrange 443-443 \
-     or udp portrange ${RELAY_LO_MIN}-${RELAY_HI_MAX}" \
+     or udp portrange ${RELAY_HI_MIN}-${RELAY_HI_MAX}" \
     2>&1 | tail -200 || true
 }
 
@@ -277,12 +283,12 @@ action_logs() {
 action_relay_watch() {
   local secs="${1:-30}"
   command -v tcpdump >/dev/null || fail "tcpdump not installed"
-  say "Watching relay range only (${RELAY_LO_MIN}-${RELAY_HI_MAX}) for ${secs}s"
+  say "Watching relay range only (${RELAY_HI_MIN}-${RELAY_HI_MAX}) for ${secs}s"
   info "Place a real call now."
   echo
   timeout "$secs" tcpdump -i any -nn -q \
-    "udp portrange ${RELAY_LO_MIN}-${RELAY_HI_MAX} \
-     or tcp portrange ${RELAY_LO_MIN}-${RELAY_HI_MAX}" \
+    "udp portrange ${RELAY_HI_MIN}-${RELAY_HI_MAX} \
+     or tcp portrange ${RELAY_HI_MIN}-${RELAY_HI_MAX}" \
     2>&1 | tail -200 || true
   echo
   info "If no packets appeared above, TURN is allocating but not"
@@ -320,7 +326,7 @@ action_call_test() {
       "udp portrange 3478-3478 or tcp portrange 3478-3478 \
        or udp portrange 5349-5349 or tcp portrange 5349-5349 \
        or udp portrange 443-443  or tcp portrange 443-443 \
-       or udp portrange ${RELAY_LO_MIN}-${RELAY_HI_MAX}" \
+       or udp portrange ${RELAY_HI_MIN}-${RELAY_HI_MAX}" \
       2>&1 | sed -u 's/^/[TCP] /' ) &
 
   ( timeout "$secs" journalctl -u orblood -f --no-pager \
@@ -617,13 +623,42 @@ UNIT
   fi
 
   # ── start the services ───────────────────────────────────────────────────
-  say "Restarting coturn instances"
-  systemctl enable coturn coturn-443 >/dev/null 2>&1 || true
-  systemctl restart coturn
-  systemctl restart coturn-443
+  # We deliberately STOP+DISABLE instance #1 (3478/5349). The cross-instance
+  # relay-forwarding bug bit us hard: even when TURN_URLS lists only :443,
+  # any browser with a cached voice/config response can still try the old
+  # URLs and end up on instance #1, while the other peer lands on
+  # instance #2 — and the two coturn processes can't share allocation
+  # state, so the call dies silently.
+  #
+  # By keeping ONLY instance #2 alive on :443, both peers in any call must
+  # land on the same process. The 3478/5349 sockets simply refuse-connect,
+  # which makes the browser fall over to a working :443 URL within a few
+  # hundred ms instead of allocating into a black hole.
+  #
+  # If you want both instances running for some reason (e.g. you've set
+  # KEEP_INSTANCE_1=1 and re-run the script), instance #1 is still on
+  # disk; just `systemctl enable --now coturn` to bring it back.
+  say "Restarting coturn (port 443 instance only)"
+  if [ "${KEEP_INSTANCE_1:-0}" = "1" ]; then
+    systemctl enable coturn coturn-443 >/dev/null 2>&1 || true
+    systemctl restart coturn
+    systemctl restart coturn-443
+    info "KEEP_INSTANCE_1=1 → both coturn instances enabled"
+  else
+    systemctl disable coturn >/dev/null 2>&1 || true
+    systemctl stop coturn >/dev/null 2>&1 || true
+    systemctl enable coturn-443 >/dev/null 2>&1 || true
+    systemctl restart coturn-443
+    info "instance #1 (3478/5349) disabled — only :443 will accept TURN"
+  fi
   sleep 2
 
-  for u in coturn coturn-443; do
+  if [ "${KEEP_INSTANCE_1:-0}" = "1" ]; then
+    UNITS_TO_CHECK="coturn coturn-443"
+  else
+    UNITS_TO_CHECK="coturn-443"
+  fi
+  for u in $UNITS_TO_CHECK; do
     if systemctl is-active --quiet "$u"; then
       ok "$u is active"
     else
