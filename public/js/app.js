@@ -13,7 +13,7 @@
 
   // bundle or the fresh one.
 
-  console.log('[orblood] client build 2026-05-16-j (PWA: master-detail mobile settings + instant DM preview render for offline contacts)');
+  console.log('[orblood] client build 2026-05-16-k (DM: fix offline-user open crash; PWA settings menu-first; voice-debug page)');
 
   // Mobile orbit drawer removed per user request.
 
@@ -2310,7 +2310,23 @@
 
       ? 'PERSONAL NOTES · ONLY YOU'
 
-      : (conv.online ? 'ONLINE · ENCRYPTED CHANNEL' : 'OFFLINE · LAST SEEN '+conv.lastSeen.toUpperCase());
+      : (conv.online
+
+          ? 'ONLINE · ENCRYPTED CHANNEL'
+
+          // lastSeen isn't shipped by the server snapshot for snapshot-
+
+          // seeded conversations — guarding it here keeps openConversation
+
+          // from throwing partway through (which used to leave the body
+
+          // showing the previous chat while the head flipped to the new
+
+          // peer's name, and made offline users open to an empty thread
+
+          // because the history-fetch block below never ran).
+
+          : 'OFFLINE · LAST SEEN '+String(conv.lastSeen || 'recently').toUpperCase());
 
     // The "TRANSMITTING TO ..." eyebrow used to live above the compose
 
