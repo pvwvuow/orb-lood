@@ -54,6 +54,24 @@
 
 <meta name="orblood-api" content="/api">
 
+<!-- Realtime / WebSocket endpoint. Leave commented to use same-origin /ws.
+
+     When the main domain is behind a CDN that mangles WebSocket traffic
+
+     (e.g. ArvanCloud + Iranian ISPs), point this at a CDN-bypass subdomain:
+
+       <meta name="orblood-realtime" content="wss://ws.orblood.ir:8443/ws">
+
+     The subdomain must resolve directly to the VPS (DNS-only, not proxied)
+
+     and have its own TLS cert (Let's Encrypt). nginx on that subdomain
+
+     proxies /ws to the same backend on 127.0.0.1:4000.
+
+-->
+
+<!-- <meta name="orblood-realtime" content="wss://ws.orblood.ir:8443/ws"> -->
+
 <title>ORBLOOD // Interstellar</title>
 
 <meta name="description" content="ORBLOOD — voice-first space chat" />

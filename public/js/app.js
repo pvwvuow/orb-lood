@@ -8299,7 +8299,42 @@
 
   let _wsTimer = null;
 
+  // The realtime/WebSocket endpoint. Normally derived from _backendBase()
+  // (same origin as the API), but can be overridden when the main domain
+  // is behind a CDN that mangles WebSocket traffic — Iranian ISPs +
+  // ArvanCloud is the canonical case. The override path is checked, in
+  // priority order:
+  //
+  //   1. window.ORBLOOD_REALTIME            (programmatic, e.g. Electron)
+  //   2. <meta name="orblood-realtime" …>   (in index.html — easiest knob)
+  //   3. localStorage.orblood_realtime_url  (dev / per-device override)
+  //   4. fall through to same-origin /ws    (default)
+  //
+  // The override should be a full ws(s):// URL including the path, e.g.
+  // "wss://ws.orblood.ir:8443/ws". We do not append "/ws" automatically
+  // because the operator may want to use a different path.
+  function _realtimeUrl(){
+    try {
+      if (typeof window !== 'undefined' && window.ORBLOOD_REALTIME){
+        return String(window.ORBLOOD_REALTIME).replace(/\/+$/, '');
+      }
+    } catch(_){}
+    try {
+      const meta = document.querySelector('meta[name="orblood-realtime"]');
+      if (meta && meta.content) return meta.content.replace(/\/+$/, '');
+    } catch(_){}
+    try {
+      const s = localStorage.getItem('orblood_realtime_url') || '';
+      if (s) return s.replace(/\/+$/, '');
+    } catch(_){}
+    return null;
+  }
+
   function _wsUrl(){
+
+    // Honour the realtime override first — see _realtimeUrl above.
+    const override = _realtimeUrl();
+    if (override) return override;
 
     const base = _backendBase();
 
