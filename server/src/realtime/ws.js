@@ -106,12 +106,18 @@ export function attachWs(httpServer) {
 
 // --- Helpers called by REST routes to push events to connected clients ---
 
-// Send to every socket of a specific user.
+// Send to every socket of a specific user. Returns the number of sockets
+// actually written to (0 means the user is offline / no live connection),
+// which lets call-sites log whether a relay was effective.
 export function sendToUser(uid, payload) {
   const set = clients.get(String(uid));
-  if (!set) return;
+  if (!set) return 0;
   const data = JSON.stringify(payload);
-  for (const ws of set) { try { ws.send(data); } catch (_) {} }
+  let n = 0;
+  for (const ws of set) {
+    try { ws.send(data); n++; } catch (_) {}
+  }
+  return n;
 }
 
 // Send to every connected client (e.g. global announcements).
@@ -182,13 +188,27 @@ function handleClientMessage(ws, uid, msg) {
         signal: msg.signal
       };
       const target = String(msg.to);
+      const sigKind = msg.signal && msg.signal.kind;
+      // Log every relay attempt so operators can see, in real time,
+      // whether ICE candidates from one client are actually reaching
+      // the other. A "no recipient" line here is the smoking gun for
+      // a "two users in the room but voice never connects" complaint:
+      // it means the display-name → user-id lookup missed.
       if (/^\d+$/.test(target)){
-        sendToUser(target, envelope);
+        const recipients = sendToUser(target, envelope);
+        console.log(`[voice-signal] ${ws._userName}(${uid}) → uid=${target} kind=${sigKind} recipients=${recipients}`);
       } else {
         const noAt = target.replace(/^@/, '');
-        one('SELECT id FROM users WHERE handle = ? OR name = ? LIMIT 1', [noAt, target])
-          .then(peer => { if (peer) sendToUser(peer.id, envelope); })
-          .catch(() => {});
+        one('SELECT id, name, handle FROM users WHERE handle = ? OR name = ? LIMIT 1', [noAt, target])
+          .then(peer => {
+            if (peer) {
+              const recipients = sendToUser(peer.id, envelope);
+              console.log(`[voice-signal] ${ws._userName}(${uid}) → "${target}" resolved to uid=${peer.id} (${peer.name}) kind=${sigKind} recipients=${recipients}`);
+            } else {
+              console.warn(`[voice-signal] ${ws._userName}(${uid}) → "${target}" NOT FOUND in users table — dropping ${sigKind} signal`);
+            }
+          })
+          .catch(e => console.warn(`[voice-signal] lookup failed for "${target}":`, e && e.message));
       }
       break;
     }
