@@ -267,6 +267,28 @@ action_logs() {
   tail -F /var/log/turnserver.log /var/log/turnserver-443.log
 }
 
+# ─── action: relay-watch ────────────────────────────────────────────────────
+# Focused dump of just the relay range. When debugging "ICE checking but
+# no audio" you don't care about handshakes — you want to see whether
+# Send indications and channel data are actually flowing through the
+# allocated relay ports. Run this on its own terminal during a call;
+# silence here means relay forwarding isn't working even though
+# Allocate did.
+action_relay_watch() {
+  local secs="${1:-30}"
+  command -v tcpdump >/dev/null || fail "tcpdump not installed"
+  say "Watching relay range only (${RELAY_LO_MIN}-${RELAY_HI_MAX}) for ${secs}s"
+  info "Place a real call now."
+  echo
+  timeout "$secs" tcpdump -i any -nn -q \
+    "udp portrange ${RELAY_LO_MIN}-${RELAY_HI_MAX} \
+     or tcp portrange ${RELAY_LO_MIN}-${RELAY_HI_MAX}" \
+    2>&1 | tail -200 || true
+  echo
+  info "If no packets appeared above, TURN is allocating but not"
+  info "forwarding — check turnserver logs for permission/channel errors."
+}
+
 # ─── action: call-test ──────────────────────────────────────────────────────
 # Combined diagnostic for the moment a real call is being placed.
 # Runs three streams in parallel for `secs` seconds:
@@ -286,10 +308,13 @@ action_call_test() {
   echo
 
   # We background each stream and prefix its output. timeout on the
-  # foreground wait gives us a deterministic stop. Using a temp dir for
-  # FIFOs keeps them off the working directory.
-  local tmp; tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"; jobs -p | xargs -r kill 2>/dev/null || true' EXIT
+  # foreground wait gives us a deterministic stop. We need to make sure
+  # `set -u` (nounset) doesn't trip on the trap — running the trap on
+  # EXIT after Ctrl+C, the variables it references must already exist.
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmpdir'; jobs -p | xargs -r kill 2>/dev/null || true" EXIT
 
   ( timeout "$secs" tcpdump -i any -nn -q \
       "udp portrange 3478-3478 or tcp portrange 3478-3478 \
@@ -425,6 +450,13 @@ action_install() {
     echo
     echo "log-file=/var/log/turnserver.log"
     echo "simple-log"
+    # `verbose` makes coturn log every Allocate / CreatePermission /
+    # ChannelBind / Send indication. Critical when debugging real
+    # calls — without it `simple-log` only writes on errors, so a
+    # broken call shows up as silence in /var/log/turnserver.log
+    # (which is exactly what bit us last debug round). On a quiet
+    # production server this is a few KB/min, totally fine.
+    echo "verbose"
     echo "pidfile=/var/run/turnserver.pid"
   } > /etc/turnserver.conf
   ok "wrote /etc/turnserver.conf (relay range ${RELAY_LO_MIN}-${RELAY_LO_MAX})"
@@ -467,6 +499,7 @@ action_install() {
     echo
     echo "log-file=/var/log/turnserver-443.log"
     echo "simple-log"
+    echo "verbose"
     echo "pidfile=/var/run/turnserver-443.pid"
   } > /etc/turnserver-443.conf
   ok "wrote /etc/turnserver-443.conf (relay range ${RELAY_HI_MIN}-${RELAY_HI_MAX})"
@@ -511,42 +544,45 @@ UNIT
   set_env TURN_USERNAME   "$TURN_USER"
   set_env TURN_PASSWORD   "$TURN_PASS"
   set_env VOICE_FORCE_RELAY "true"
-  # TCP-only by default. Iranian ISPs block outbound UDP at the carrier
-  # level — every UDP relay URL in this list makes the browser sit on
-  # an ICE probe for ~30s before failing over. With force-relay set,
-  # that's a 30s gap before the call connects (or doesn't). The four
-  # TCP transports below have all been verified end-to-end.
+  # CRITICAL: list only :443 URLs by default. Two reasons:
+  #
+  # 1. Iranian ISPs and most corporate firewalls block outbound UDP and
+  #    non-standard TCP ports. :443 is the one port nobody dares filter
+  #    because it's the public HTTPS port.
+  #
+  # 2. We run TWO coturn instances (one on 3478/5349, one on 443).
+  #    They are SEPARATE PROCESSES and cannot share allocation state —
+  #    if peer A allocates on instance #1 and peer B allocates on
+  #    instance #2, a Send indication from A to B's relay address lands
+  #    on the wrong process and is silently dropped. By listing only
+  #    :443 transports, we guarantee both peers in a call always end up
+  #    on the same instance, so relay forwarding works end-to-end.
   #
   # Order is what the browser tries first → last:
-  #   1) turn:443?tcp    — plain TCP on 443; tunnels through HTTP-CONNECT
-  #                        proxies, looks like generic HTTPS to DPI
-  #   2) turns:443?tcp   — TLS-wrapped TCP on 443; identical-on-the-wire
-  #                        to real HTTPS, hardest to fingerprint
-  #   3) turns:5349?tcp  — standard TURNS port
-  #   4) turn:3478?tcp   — last-resort plain TCP on the standard port
+  #   1) turn:443?tcp   — plain TCP on 443; tunnels through HTTP-CONNECT
+  #                       proxies, looks like generic HTTPS to DPI
+  #   2) turns:443?tcp  — TLS-wrapped TCP on 443; identical-on-the-wire
+  #                       to real HTTPS, hardest to fingerprint
   TURN_URLS="turn:${TURN_HOST}:443?transport=tcp"
   TURN_URLS+=",turns:${TURN_HOST}:443?transport=tcp"
-  TURN_URLS+=",turns:${TURN_HOST}:5349?transport=tcp"
-  TURN_URLS+=",turn:${TURN_HOST}:3478?transport=tcp"
   if [ "$UDP_OK" = "1" ]; then
-    # Operator opted in to UDP. Append after the TCP entries so TCP
-    # still wins the race on networks that block UDP silently.
+    # Operator opted in to UDP. Stay on :443 so we still hit a single
+    # coturn instance — UDP/443 is the only UDP port worth trying.
     TURN_URLS+=",turn:${TURN_HOST}:443?transport=udp"
-    TURN_URLS+=",turn:${TURN_HOST}:3478?transport=udp"
-    info "UDP_OK=1 → adding UDP relay URLs after the TCP ones"
+    info "UDP_OK=1 → adding UDP/443 relay URL after the TCP ones"
   fi
   set_env TURN_URLS "$TURN_URLS"
-  # Also clear VOICE_ALLOW_UDP to match — voice-config.js filters UDP
-  # URLs out of the response unless this is explicitly true.
+  # voice-config.js filters UDP URLs out of the response unless this
+  # flag is explicitly true. Mirror the UDP_OK flag here.
   if [ "$UDP_OK" = "1" ]; then
     set_env VOICE_ALLOW_UDP "true"
   else
     set_env VOICE_ALLOW_UDP "false"
   fi
   if [ "$UDP_OK" = "1" ]; then
-    ok ".env aligned (TURN_URLS has 6 transports — TCP first, then UDP)"
+    ok ".env aligned (TURN_URLS: TCP + TLS + UDP, all on :443)"
   else
-    ok ".env aligned (TURN_URLS has 4 TCP transports; UDP disabled)"
+    ok ".env aligned (TURN_URLS: TCP + TLS on :443, single instance)"
   fi
 
   # ── firewall ─────────────────────────────────────────────────────────────
@@ -639,6 +675,7 @@ case "${1:-install}" in
   verify|test)        action_verify ;;
   sniff|capture)      action_sniff "${2:-30}" ;;
   call-test|call)     action_call_test "${2:-45}" ;;
+  relay-watch|relay)  action_relay_watch "${2:-30}" ;;
   logs|tail)          action_logs ;;
   *)
     cat <<EOM
@@ -651,6 +688,8 @@ Commands:
   sniff [secs]            live tcpdump on TURN ports (default 30s)
   call-test [secs]        combined tcpdump + backend log + coturn log
                           (best for diagnosing a real call; default 45s)
+  relay-watch [secs]      tcpdump only on the relay range — proves
+                          whether actual audio is flowing (default 30s)
   logs                    tail -F /var/log/turnserver*.log
 
 Environment:
