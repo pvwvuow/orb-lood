@@ -10614,17 +10614,63 @@
 
       };
 
+      // Track candidate counts so we can paint a single, useful "summary"
+      // log when gathering completes. Without this the only signal that
+      // TURN is unreachable on a filtered network is a 30-40s silence
+      // followed by a bare "ICE gathering complete", which is useless
+      // for debugging.
+      const _candCounts = { host: 0, srflx: 0, prflx: 0, relay: 0, total: 0 };
+      // Watchdog: if forceRelay is on and we don't see a single relay
+      // candidate within 8s, we surface a clear warning. Chrome's TURN
+      // allocation timeout is ~30-40s, but the operator should not have
+      // to wait that long to know the TURN server is unreachable.
+      let _relayWatchdog = null;
+      if (forceRelay) {
+        _relayWatchdog = setTimeout(() => {
+          if (_candCounts.relay === 0) {
+            _vlog.warn('TURN allocation taking >8s — TURN server may be unreachable, blocked, or rejecting credentials. Peer:', peerName);
+            showToast('TURN server slow to respond — voice may fail.', 'warn');
+          }
+        }, 8000);
+      }
+
       pc.onicecandidate = ev => {
 
         if (ev.candidate){
 
-          _vlog.debug('Local ICE candidate:', ev.candidate.type, ev.candidate.protocol, ev.candidate.address ? ev.candidate.address.replace(/\d+\.\d+$/, 'x.x') : '(mdns)');
+          const c = ev.candidate;
+          const t = c.type || '?';
+          if (_candCounts[t] !== undefined) _candCounts[t]++;
+          _candCounts.total++;
+          _vlog.debug('Local ICE candidate:', t, c.protocol, c.address ? c.address.replace(/\d+\.\d+$/, 'x.x') : '(mdns)');
 
           _signal(peerName, { kind:'ice', candidate: ev.candidate });
 
         } else {
 
-          _vlog.info('ICE gathering complete for', peerName);
+          if (_relayWatchdog) { clearTimeout(_relayWatchdog); _relayWatchdog = null; }
+          // Always-on summary — gives operators a single line that tells
+          // them whether ICE actually produced anything useful.
+          _vlog.info('ICE gathering complete for', peerName,
+            '| total:', _candCounts.total,
+            '| host:', _candCounts.host,
+            '| srflx:', _candCounts.srflx,
+            '| relay:', _candCounts.relay);
+
+          if (forceRelay && _candCounts.relay === 0) {
+            // Hard error: forceRelay was set, gathering finished, and
+            // we have ZERO relay candidates. The connection cannot
+            // proceed. This is the loudest possible signal that TURN
+            // is broken — auth mismatch, port blocked by ISP/CDN,
+            // coturn down, or wrong external-ip.
+            _vlog.error('NO RELAY CANDIDATES with forceRelay=true — call WILL FAIL. Check: (1) TURN credentials match coturn config, (2) TURN URL/port reachable from this network, (3) coturn external-ip matches VPS public IP, (4) DNS does not point through a CDN that blocks UDP/non-HTTP TLS.');
+            showToast('Voice failed: TURN server unreachable. See console for details.', 'warn');
+            setVoiceStatus('failed');
+          } else if (!forceRelay && _candCounts.total === 0) {
+            _vlog.error('NO ICE CANDIDATES at all — getUserMedia produced no usable network paths. Peer:', peerName);
+            showToast('Voice failed: no network path available.', 'warn');
+            setVoiceStatus('failed');
+          }
 
         }
 
