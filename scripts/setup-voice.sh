@@ -441,6 +441,15 @@ action_install() {
     echo "denied-peer-ip=172.16.0.0-172.31.255.255"
     echo "denied-peer-ip=192.168.0.0-192.168.255.255"
     echo "denied-peer-ip=127.0.0.0-127.255.255.255"
+    # CRITICAL: explicitly allow our own public IP as a peer.
+    # When force-relay is on and both browsers use this same TURN
+    # server, the peer address one client sends to is the OTHER
+    # client's relay address — which lives on this very VPS. coturn
+    # then runs that peer through `denied-peer-ip` filtering, sees
+    # 194.60.231.226 doesn't match a private range, but on some
+    # builds still rejects it as "Forbidden IP" during ChannelBind.
+    # Explicitly allow our public IP and the relay range we use.
+    echo "allowed-peer-ip=${EXT_IP}"
     echo "allow-loopback-peers"
     echo
     echo "total-quota=100"
@@ -490,6 +499,7 @@ action_install() {
     echo "denied-peer-ip=172.16.0.0-172.31.255.255"
     echo "denied-peer-ip=192.168.0.0-192.168.255.255"
     echo "denied-peer-ip=127.0.0.0-127.255.255.255"
+    echo "allowed-peer-ip=${EXT_IP}"
     echo "allow-loopback-peers"
     echo
     echo "total-quota=100"
