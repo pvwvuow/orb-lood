@@ -1,0 +1,707 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Voice Debug · ORBLOOD</title>
+<link rel="icon" href="/favicon.ico" />
+<style>
+  /*
+   * Voice debug console. Self-contained — does not depend on the SPA bundle
+   * so it can be opened on a broken deployment to figure out *why* the
+   * voice subsystem is misbehaving. Lives at /voice-debug.html.
+   *
+   * What it tests, in order:
+   *   1. Backend reachability (/api/healthz)
+   *   2. Auth token presence (reuses orblood_token from localStorage)
+   *   3. Voice config endpoint (/api/voice/config) — list of ICE servers
+   *   4. STUN reachability for each server (must surface a srflx candidate)
+   *   5. TURN allocation for each server (must surface a relay candidate
+   *      AND credentials must be accepted — no 401 in the ICE error event)
+   *   6. WebSocket reachability (/ws) — voice-signal relay path
+   *   7. Microphone permission (getUserMedia)
+   *
+   * Every step writes a line to the live log so the user can hand it to
+   * an operator. The page never sends audio anywhere — it only gathers
+   * candidates and tears the PCs down.
+   */
+  :root {
+    --bg:#0a0612;--panel:#0f0a1c;--tint-1:rgba(255,255,255,0.025);
+    --tint-2:rgba(255,255,255,0.05);--tint-3:rgba(255,255,255,0.08);
+    --gb:rgba(255,255,255,0.07);
+    --t1:#f4f0ff;--t2:#a8a0bd;--t3:#6a6280;
+    --accent:#b91c4a;--success:#22c55e;--warn:#f59e0b;--danger:#ef4444;
+    --info:#38bdf8;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--t1);
+    font-family:'Space Grotesk',system-ui,-apple-system,sans-serif;
+    font-size:14px;line-height:1.5;min-height:100vh}
+  a{color:var(--info);text-decoration:none}a:hover{text-decoration:underline}
+  .wrap{max-width:980px;margin:0 auto;padding:18px}
+  header{display:flex;align-items:center;justify-content:space-between;
+    padding:14px 0 22px;border-bottom:1px solid var(--gb);margin-bottom:18px}
+  header h1{margin:0;font-size:1.1rem;letter-spacing:1.5px;
+    font-family:'Space Mono',monospace;color:var(--t1)}
+  header h1 span{color:var(--accent)}
+  header .meta{font-size:0.7rem;color:var(--t3);font-family:'Space Mono',monospace}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
+  @media (max-width:760px){.row{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--tint-3);
+    border-radius:12px;padding:14px 16px;box-shadow:0 4px 24px rgba(0,0,0,0.3)}
+  .card h2{margin:0 0 10px;font-size:0.78rem;letter-spacing:1.4px;
+    font-family:'Space Mono',monospace;color:var(--t2);
+    display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .card h2 .pill{font-size:0.62rem;padding:2px 8px;border-radius:8px;
+    background:var(--tint-2);color:var(--t3);letter-spacing:1px}
+  .pill.ok{background:rgba(34,197,94,0.18);color:var(--success)}
+  .pill.warn{background:rgba(245,158,11,0.18);color:var(--warn)}
+  .pill.fail{background:rgba(239,68,68,0.18);color:var(--danger)}
+  .pill.info{background:rgba(56,189,248,0.18);color:var(--info)}
+  .pill.busy{background:rgba(255,255,255,0.08);color:var(--t2)}
+  .kv{display:grid;grid-template-columns:130px 1fr;gap:6px 10px;
+    font-size:0.78rem}
+  .kv .k{color:var(--t3);font-family:'Space Mono',monospace;font-size:0.7rem;
+    letter-spacing:0.6px;text-transform:uppercase}
+  .kv .v{color:var(--t1);word-break:break-word}
+  .kv .v.muted{color:var(--t2)}
+  .kv .v.bad{color:var(--danger)}
+  .kv .v.warn{color:var(--warn)}
+  .kv .v.good{color:var(--success)}
+  button{background:var(--accent);color:#fff;border:none;border-radius:8px;
+    padding:9px 14px;cursor:pointer;font-family:'Space Mono',monospace;
+    font-size:0.72rem;letter-spacing:1.2px;font-weight:600;
+    transition:background 0.15s}
+  button:hover{background:#a51640}
+  button:disabled{opacity:0.5;cursor:not-allowed}
+  button.secondary{background:var(--tint-2);color:var(--t1);
+    border:1px solid var(--gb)}
+  button.secondary:hover{background:var(--tint-3)}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  .ice-list{display:flex;flex-direction:column;gap:10px}
+  .ice-row{padding:10px 12px;background:var(--tint-1);
+    border:1px solid var(--gb);border-radius:8px;font-size:0.78rem}
+  .ice-row .url{font-family:'Space Mono',monospace;font-size:0.74rem;
+    color:var(--t1);word-break:break-all}
+  .ice-row .auth{color:var(--t3);font-size:0.68rem;margin-top:3px;
+    font-family:'Space Mono',monospace}
+  .ice-row .candcounts{margin-top:8px;display:flex;gap:8px;flex-wrap:wrap}
+  .candpill{padding:2px 8px;border-radius:6px;font-size:0.62rem;
+    font-family:'Space Mono',monospace;letter-spacing:0.8px;
+    background:var(--tint-2);color:var(--t3)}
+  .candpill.host{background:rgba(56,189,248,0.18);color:var(--info)}
+  .candpill.srflx{background:rgba(168,139,250,0.18);color:#c4b5fd}
+  .candpill.relay{background:rgba(34,197,94,0.18);color:var(--success)}
+  .candpill.prflx{background:rgba(245,158,11,0.18);color:var(--warn)}
+  .ice-row .verdict{margin-top:8px;font-size:0.7rem;font-weight:600;
+    font-family:'Space Mono',monospace;letter-spacing:0.6px}
+  .ice-row .verdict.good{color:var(--success)}
+  .ice-row .verdict.bad{color:var(--danger)}
+  .ice-row .verdict.warn{color:var(--warn)}
+  .ice-row .verdict.busy{color:var(--info)}
+  .ice-row .extra{margin-top:6px;font-size:0.68rem;color:var(--t3);
+    font-family:'Space Mono',monospace}
+  .log{height:340px;overflow-y:auto;background:#000;padding:10px 12px;
+    border-radius:8px;border:1px solid var(--gb);
+    font-family:'Space Mono',monospace;font-size:0.68rem;line-height:1.45;
+    color:var(--t1);white-space:pre-wrap;word-break:break-word}
+  .log-line{margin-bottom:2px}
+  .log-line.info  {color:var(--info)}
+  .log-line.ok    {color:var(--success)}
+  .log-line.warn  {color:var(--warn)}
+  .log-line.error {color:var(--danger)}
+  .log-line.muted {color:var(--t3)}
+  .log-line .ts{color:#444;margin-right:6px}
+  .footer-tip{font-size:0.72rem;color:var(--t3);margin-top:18px;
+    line-height:1.6}
+  code{background:var(--tint-2);padding:1px 5px;border-radius:4px;
+    font-family:'Space Mono',monospace;font-size:0.72rem;color:var(--t1)}
+  details{margin-top:8px;background:var(--tint-1);border-radius:8px;
+    padding:6px 12px;border:1px solid var(--gb)}
+  summary{cursor:pointer;font-family:'Space Mono',monospace;font-size:0.7rem;
+    color:var(--t2);letter-spacing:0.8px}
+  pre{margin:6px 0 0;font-size:0.66rem;color:var(--t3);overflow-x:auto;
+    white-space:pre-wrap;word-break:break-word}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>// VOICE <span>DEBUG</span></h1>
+    <span class="meta" id="hdrMeta">probing&hellip;</span>
+  </header>
+
+  <div class="actions">
+    <button id="btnRunAll">RUN ALL TESTS</button>
+    <button class="secondary" id="btnClearLog">CLEAR LOG</button>
+    <button class="secondary" id="btnRetestIce">RE-TEST ICE</button>
+    <button class="secondary" id="btnTestMic">TEST MIC</button>
+    <button class="secondary" id="btnTestWs">TEST WEBSOCKET</button>
+    <a class="secondary" href="/" style="display:inline-flex;align-items:center;padding:9px 14px;border-radius:8px;background:var(--tint-2);border:1px solid var(--gb);color:var(--t1);font-family:'Space Mono',monospace;font-size:0.72rem;letter-spacing:1.2px;font-weight:600">&larr; BACK TO APP</a>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h2>Environment <span class="pill busy" id="pillEnv">probing</span></h2>
+      <div class="kv">
+        <div class="k">Page URL</div><div class="v" id="envPageUrl"></div>
+        <div class="k">Origin</div><div class="v" id="envOrigin"></div>
+        <div class="k">Backend base</div><div class="v" id="envBackend"></div>
+        <div class="k">Token present</div><div class="v" id="envToken"></div>
+        <div class="k">User agent</div><div class="v muted" id="envUa"></div>
+        <div class="k">Connection</div><div class="v muted" id="envConn"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Backend health <span class="pill busy" id="pillApi">probing</span></h2>
+      <div class="kv">
+        <div class="k">/api/healthz</div><div class="v" id="apiHealth">…</div>
+        <div class="k">DB ping</div><div class="v" id="apiDb">…</div>
+        <div class="k">Server uptime</div><div class="v muted" id="apiUptime">…</div>
+        <div class="k">Public origin</div><div class="v muted" id="apiPubOrigin">…</div>
+        <div class="k">Voice/config status</div><div class="v" id="apiVoiceCfg">…</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h2>WebSocket signaling <span class="pill busy" id="pillWs">idle</span></h2>
+      <div class="kv">
+        <div class="k">URL</div><div class="v" id="wsUrl">…</div>
+        <div class="k">Status</div><div class="v" id="wsStatus">not opened</div>
+        <div class="k">Hello message</div><div class="v" id="wsHello">…</div>
+        <div class="k">RTT (ping/pong)</div><div class="v" id="wsRtt">…</div>
+        <div class="k">Online users</div><div class="v muted" id="wsOnline">…</div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Microphone access <span class="pill busy" id="pillMic">idle</span></h2>
+      <div class="kv">
+        <div class="k">Permission</div><div class="v" id="micPerm">unknown</div>
+        <div class="k">Default device</div><div class="v" id="micDevice">…</div>
+        <div class="k">Sample rate</div><div class="v muted" id="micSr">…</div>
+        <div class="k">Channel count</div><div class="v muted" id="micCh">…</div>
+        <div class="k">Active level</div><div class="v" id="micLevel" style="font-family:'Space Mono',monospace">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>ICE servers (TURN / STUN) <span class="pill busy" id="pillIce">idle</span></h2>
+    <div id="iceList" class="ice-list">
+      <div class="ice-row" style="color:var(--t3)">No ICE config loaded yet. Click <strong>RUN ALL TESTS</strong> above.</div>
+    </div>
+    <details style="margin-top:14px">
+      <summary>Raw /api/voice/config payload</summary>
+      <pre id="rawIceConfig">(none)</pre>
+    </details>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <h2>Live log <span class="pill info" id="pillLog">running</span></h2>
+    <div class="log" id="log"></div>
+  </div>
+
+  <div class="footer-tip">
+    <strong>How to read this page:</strong> every section has a status pill
+    (<span class="pill ok">ok</span>, <span class="pill warn">warn</span>,
+    <span class="pill fail">fail</span>). The most useful single line is the
+    <strong>verdict</strong> under each ICE server: <em>relay candidate
+    obtained</em> means TURN is reachable AND your credentials are accepted;
+    <em>no relay</em> means either the TURN port is blocked from this
+    network, the username/password don't match coturn's
+    <code>/etc/turnserver.conf</code>, or coturn's <code>external-ip</code>
+    setting is wrong. The live log records every probe with timestamps so
+    you can paste it into a bug report.
+    <br/><br/>
+    <strong>Common Iran-network failures:</strong>
+    UDP often blocked at the carrier &rarr; expect <code>turn:&hellip;:3478</code>
+    via UDP to fail; <code>turn:&hellip;:443?transport=tcp</code> and
+    <code>turns:&hellip;:443</code> should still work because TLS-on-443 is
+    indistinguishable from HTTPS. If <em>none</em> of the TURN URLs return a
+    relay candidate, the CDN in front of the domain is probably eating the
+    TURN traffic &mdash; point a separate subdomain (e.g.
+    <code>turn.orblood.ir</code>) directly at the VPS and use that as
+    <code>TURN_HOST</code>.
+  </div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  // ─── DOM helpers ──────────────────────────────────────────────────
+  const $ = sel => document.querySelector(sel);
+  const $$ = sel => Array.from(document.querySelectorAll(sel));
+  function setPill(id, text, cls){
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'pill ' + (cls || '');
+  }
+  function setKv(id, text, cls){
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'v' + (cls ? ' ' + cls : '');
+  }
+  function logLine(level, ...parts){
+    const ts = new Date().toISOString().slice(11,23);
+    const line = document.createElement('div');
+    line.className = 'log-line ' + level;
+    line.innerHTML = '<span class="ts">'+ts+'</span>' +
+      parts.map(p => typeof p === 'string' ? p : JSON.stringify(p)).join(' ')
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const box = $('#log');
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+  }
+  const log = {
+    info:  (...a) => logLine('info',  ...a),
+    ok:    (...a) => logLine('ok',    ...a),
+    warn:  (...a) => logLine('warn',  ...a),
+    error: (...a) => logLine('error', ...a),
+    muted: (...a) => logLine('muted', ...a),
+  };
+
+  // ─── Environment ──────────────────────────────────────────────────
+  // The voice-debug page is served from the same origin as the API in
+  // production; in dev / Electron the backend may live on a different
+  // origin, in which case the SPA stores the base in localStorage under
+  // the key the SPA itself uses. We mirror that lookup here so this page
+  // can also probe a remote backend if that's how the user is set up.
+  const TOKEN_KEY = 'orblood_token';
+  function backendBase(){
+    // 1. Same-origin in production / nginx setups.
+    // 2. localStorage override (dev / Electron) — same key the SPA uses.
+    let b = '';
+    try { b = localStorage.getItem('orblood_backend_url') || ''; } catch(_){}
+    if (b) return b.replace(/\/$/, '') + '/api';
+    return location.origin + '/api';
+  }
+  function readToken(){
+    try { return localStorage.getItem(TOKEN_KEY) || null; } catch(_){ return null; }
+  }
+  setKv('envPageUrl',  location.href);
+  setKv('envOrigin',   location.origin);
+  setKv('envBackend',  backendBase());
+  setKv('envToken',    readToken() ? 'yes' : 'no (login first)',
+                       readToken() ? 'good' : 'warn');
+  setKv('envUa',       navigator.userAgent);
+  if (navigator.connection){
+    const c = navigator.connection;
+    setKv('envConn', (c.effectiveType||'?') + ' · downlink ' + (c.downlink||'?') + ' Mbps · rtt ' + (c.rtt||'?') + 'ms');
+  } else {
+    setKv('envConn', 'navigator.connection unavailable', 'muted');
+  }
+  setPill('pillEnv', readToken() ? 'ok' : 'warn', readToken() ? 'ok' : 'warn');
+
+  // ─── Backend health ───────────────────────────────────────────────
+  async function fetchJson(path, opts){
+    const url = backendBase() + path;
+    const headers = Object.assign({ 'Accept':'application/json' }, (opts && opts.headers) || {});
+    const tok = readToken();
+    if (tok && !headers.Authorization) headers.Authorization = 'Bearer ' + tok;
+    const r = await fetch(url, Object.assign({ headers }, opts || {}));
+    let body = null; try { body = await r.json(); } catch(_){ body = null; }
+    return { ok: r.ok, status: r.status, body };
+  }
+
+  async function probeApi(){
+    setPill('pillApi', 'probing', 'busy');
+    log.info('GET /api/healthz');
+    try {
+      const r = await fetchJson('/healthz');
+      if (r.ok && r.body && (r.body.ok === true || r.body.status === 'ok')){
+        setKv('apiHealth', 'OK (' + r.status + ')', 'good');
+        setKv('apiDb', r.body.db === false ? 'unreachable' : 'ok',
+                       r.body.db === false ? 'bad' : 'good');
+        setKv('apiUptime',   r.body.uptime ? (Math.round(r.body.uptime) + 's') : '—');
+        setKv('apiPubOrigin', r.body.publicOrigin || '—');
+        log.ok('Backend healthy:', JSON.stringify(r.body));
+      } else {
+        setKv('apiHealth', 'FAILED (' + r.status + ')', 'bad');
+        log.error('Health check failed:', r.status, JSON.stringify(r.body));
+      }
+    } catch (e){
+      setKv('apiHealth', 'NETWORK ERROR: ' + (e && e.message), 'bad');
+      log.error('Backend unreachable:', e && e.message);
+      setPill('pillApi', 'fail', 'fail');
+      return false;
+    }
+
+    if (!readToken()){
+      setKv('apiVoiceCfg', 'login required (no token)', 'warn');
+      setPill('pillApi', 'warn', 'warn');
+      log.warn('No auth token found in localStorage. Voice config endpoint requires login. Open the SPA, sign in, then return here.');
+      return false;
+    }
+
+    log.info('GET /api/voice/config');
+    const r2 = await fetchJson('/voice/config');
+    if (r2.ok && r2.body && Array.isArray(r2.body.iceServers)){
+      setKv('apiVoiceCfg', r2.body.iceServers.length + ' ICE entries · forceRelay=' + !!r2.body.forceRelay,
+                           r2.body.iceServers.length ? 'good' : 'warn');
+      $('#rawIceConfig').textContent = JSON.stringify(r2.body, null, 2);
+      log.ok('Voice config loaded.', r2.body.iceServers.length, 'ICE entries; forceRelay=', r2.body.forceRelay);
+      setPill('pillApi', 'ok', 'ok');
+      return r2.body;
+    } else if (r2.status === 401){
+      setKv('apiVoiceCfg', 'unauthorized — token expired?', 'bad');
+      setPill('pillApi', 'fail', 'fail');
+      log.error('Voice config: 401 unauthorized. Sign in again on the main app.');
+      return false;
+    } else {
+      setKv('apiVoiceCfg', 'failed (' + r2.status + ')', 'bad');
+      setPill('pillApi', 'fail', 'fail');
+      log.error('Voice config endpoint failed:', r2.status, JSON.stringify(r2.body));
+      return false;
+    }
+  }
+
+  // ─── ICE / TURN probing ───────────────────────────────────────────
+  // For each iceServers entry we open an RTCPeerConnection scoped to that
+  // entry only, gather candidates with iceTransportPolicy:'relay', and
+  // count host / srflx / prflx / relay candidates. The "verdict" is:
+  //
+  //   - relay > 0 → TURN works, credentials accepted.
+  //   - srflx but no relay → STUN works, TURN auth or port blocked.
+  //   - host only → STUN unreachable; URL likely DNS-eaten by CDN.
+  //   - none → server entry rejected outright (DNS fail, bad scheme).
+  //
+  // When the gathering produces an `icecandidateerror`, we surface the
+  // STUN error code (401 = bad credentials, 701 = network error, etc.)
+  // so the operator knows where to look.
+  function classifyCandidate(cand){
+    if (!cand || !cand.candidate) return null;
+    if (cand.type) return cand.type;
+    const parts = cand.candidate.split(' ');
+    return parts[7] || null;
+  }
+  async function probeIceServer(server, idx){
+    const rowEl = document.createElement('div');
+    rowEl.className = 'ice-row';
+    const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+    rowEl.innerHTML = '<div class="url">' + urls.map(u => escapeHtml(u)).join('<br/>') + '</div>'
+      + '<div class="auth">' + (server.username
+            ? 'auth: ' + escapeHtml(server.username) + ' / ' + (server.credential ? '••• (' + server.credential.length + ' chars)' : 'no password')
+            : 'no auth (STUN-only)') + '</div>'
+      + '<div class="candcounts" data-counts></div>'
+      + '<div class="verdict busy" data-verdict>probing&hellip;</div>'
+      + '<div class="extra" data-extra></div>';
+    $('#iceList').appendChild(rowEl);
+    const countsEl = rowEl.querySelector('[data-counts]');
+    const verdictEl = rowEl.querySelector('[data-verdict]');
+    const extraEl = rowEl.querySelector('[data-extra]');
+
+    const counts = { host:0, srflx:0, prflx:0, relay:0, total:0 };
+    const errors = [];
+    const startedAt = performance.now();
+
+    let pc;
+    try {
+      // Force-relay so a ZERO-relay outcome unambiguously means "this URL
+      // can't produce a relay candidate" (rather than "PC found a P2P path
+      // and stopped looking").
+      pc = new RTCPeerConnection({
+        iceServers: [server],
+        iceTransportPolicy: server.username ? 'relay' : 'all'
+      });
+    } catch (e){
+      verdictEl.textContent = 'PC creation failed: ' + (e && e.message);
+      verdictEl.className = 'verdict bad';
+      log.error('[ice#'+idx+'] RTCPeerConnection ctor threw:', e && e.message);
+      return;
+    }
+
+    // We need at least one m-line to actually start ICE gathering. Adding
+    // a recv-only audio transceiver is the lightest legal way.
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    return await new Promise(resolve => {
+      let resolved = false;
+      const finalise = () => {
+        if (resolved) return; resolved = true;
+        try { pc.close(); } catch(_){}
+        const elapsed = ((performance.now() - startedAt)/1000).toFixed(2);
+        // Render counts
+        countsEl.innerHTML = ''
+          + '<span class="candpill host">host '+counts.host+'</span>'
+          + '<span class="candpill srflx">srflx '+counts.srflx+'</span>'
+          + '<span class="candpill prflx">prflx '+counts.prflx+'</span>'
+          + '<span class="candpill relay">relay '+counts.relay+'</span>';
+
+        if (server.username) {
+          // TURN entry — must have relay
+          if (counts.relay > 0){
+            verdictEl.textContent = '✓ relay candidate obtained ('+elapsed+'s)';
+            verdictEl.className = 'verdict good';
+            log.ok('[ice#'+idx+']', urls.join(','), '→ relay OK in '+elapsed+'s');
+          } else if (errors.some(e => /401|unauthor|stale/i.test(e.errorText || ''))){
+            verdictEl.textContent = '✗ AUTH REJECTED — username/password mismatch with coturn';
+            verdictEl.className = 'verdict bad';
+            log.error('[ice#'+idx+'] TURN rejected credentials:', errors.map(e => e.errorText).join(' | '));
+          } else if (errors.length){
+            verdictEl.textContent = '✗ no relay (errors: ' + errors.length + ')';
+            verdictEl.className = 'verdict bad';
+            log.error('[ice#'+idx+'] no relay candidate. Errors:', JSON.stringify(errors));
+          } else {
+            verdictEl.textContent = '✗ no relay (timeout — port blocked or coturn unreachable)';
+            verdictEl.className = 'verdict bad';
+            log.error('[ice#'+idx+'] no relay candidate, no errors. URL likely unreachable from this network or eaten by a CDN.');
+          }
+        } else {
+          // STUN-only entry — srflx is the success criterion
+          if (counts.srflx > 0){
+            verdictEl.textContent = '✓ srflx (server-reflexive) obtained ('+elapsed+'s)';
+            verdictEl.className = 'verdict good';
+            log.ok('[ice#'+idx+'] STUN ok in '+elapsed+'s — public IP discovered');
+          } else {
+            verdictEl.textContent = '✗ no srflx — STUN unreachable';
+            verdictEl.className = 'verdict bad';
+            log.error('[ice#'+idx+'] STUN reachability failed');
+          }
+        }
+        if (errors.length){
+          extraEl.textContent = 'errors: ' + errors.map(e => '['+e.errorCode+'] '+e.errorText).join(' | ');
+        }
+        resolve();
+      };
+
+      pc.onicecandidate = e => {
+        if (!e.candidate){ finalise(); return; }
+        const t = classifyCandidate(e.candidate);
+        if (t && counts[t] !== undefined) counts[t]++;
+        counts.total++;
+        log.muted('[ice#'+idx+'] candidate', t || '?', e.candidate.protocol || '', (e.candidate.address || e.candidate.ip || '?') + ':' + (e.candidate.port || '?'));
+      };
+      pc.onicecandidateerror = ev => {
+        const e = {
+          errorCode: ev.errorCode,
+          errorText: ev.errorText,
+          url:       ev.url,
+          host:      ev.hostCandidate
+        };
+        errors.push(e);
+        log.warn('[ice#'+idx+'] icecandidateerror', JSON.stringify(e));
+      };
+
+      // Hard timeout — TURN allocations should complete in <10s on a
+      // healthy network. Anything longer means the server is unreachable.
+      setTimeout(finalise, 12000);
+
+      pc.createOffer().then(o => pc.setLocalDescription(o)).catch(err => {
+        log.error('[ice#'+idx+'] createOffer failed:', err && err.message);
+        finalise();
+      });
+    });
+  }
+
+  async function probeAllIce(config){
+    setPill('pillIce', 'probing', 'busy');
+    $('#iceList').innerHTML = '';
+    if (!config || !Array.isArray(config.iceServers) || !config.iceServers.length){
+      $('#iceList').innerHTML = '<div class="ice-row" style="color:var(--danger)">No ICE servers configured on the backend.</div>';
+      setPill('pillIce', 'fail', 'fail');
+      log.error('No ICE servers — backend returned an empty list');
+      return;
+    }
+    log.info('Probing ' + config.iceServers.length + ' ICE entries…');
+    let anyRelay = false;
+    for (let i = 0; i < config.iceServers.length; i++){
+      await probeIceServer(config.iceServers[i], i);
+    }
+    // Recompute summary
+    const rows = $$('.ice-row [data-verdict].good').length;
+    const fails = $$('.ice-row [data-verdict].bad').length;
+    if (rows > 0){
+      setPill('pillIce', rows + '/' + config.iceServers.length + ' ok', 'ok');
+      log.ok('ICE probe complete: '+rows+' working, '+fails+' failed');
+    } else {
+      setPill('pillIce', 'fail', 'fail');
+      log.error('ICE probe complete: NO working entries — voice will not connect');
+    }
+  }
+
+  // ─── WebSocket probe ──────────────────────────────────────────────
+  function wsUrlFromBackend(){
+    let b;
+    try { b = localStorage.getItem('orblood_backend_url') || ''; } catch(_){ b = ''; }
+    const base = b ? b.replace(/\/$/, '') : location.origin;
+    const u = new URL(base);
+    u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    u.pathname = '/ws';
+    const tok = readToken();
+    if (tok) u.search = '?token=' + encodeURIComponent(tok);
+    return u.toString();
+  }
+
+  let wsRef = null;
+  async function probeWs(){
+    setPill('pillWs', 'probing', 'busy');
+    if (!readToken()){
+      setKv('wsStatus', 'login required', 'warn');
+      setPill('pillWs', 'warn', 'warn');
+      log.warn('Skipping WS probe — no auth token');
+      return;
+    }
+    if (wsRef){ try { wsRef.close(); } catch(_){} wsRef = null; }
+    const url = wsUrlFromBackend();
+    setKv('wsUrl', url.replace(/token=[^&]+/, 'token=•••'));
+    log.info('Opening WS:', url.replace(/token=[^&]+/, 'token=•••'));
+    return new Promise(resolve => {
+      let ws;
+      try { ws = new WebSocket(url); }
+      catch (e){
+        setKv('wsStatus', 'ctor threw: '+(e && e.message), 'bad');
+        setPill('pillWs', 'fail', 'fail');
+        log.error('WS ctor threw:', e && e.message);
+        return resolve();
+      }
+      wsRef = ws;
+      const opened = setTimeout(() => {
+        if (ws.readyState !== 1){
+          setKv('wsStatus', 'timeout (state '+ws.readyState+')', 'bad');
+          setPill('pillWs', 'fail', 'fail');
+          log.error('WS open timeout');
+          try { ws.close(); } catch(_){}
+          resolve();
+        }
+      }, 8000);
+
+      ws.onopen = () => {
+        clearTimeout(opened);
+        setKv('wsStatus', 'open', 'good');
+        log.ok('WS open');
+        // RTT probe
+        const t0 = performance.now();
+        try { ws.send(JSON.stringify({ type:'ping', t: t0 })); } catch(_){}
+      };
+      ws.onmessage = ev => {
+        let data; try { data = JSON.parse(ev.data); } catch(_) { data = null; }
+        if (!data) return;
+        if (data.type === 'hello'){
+          setKv('wsHello', 'uid '+data.uid+' · '+data.name,
+                            'good');
+          setKv('wsOnline', Array.isArray(data.online) ? data.online.length + ' users online' : '—');
+          log.ok('WS hello:', JSON.stringify(data));
+          setPill('pillWs', 'ok', 'ok');
+        } else if (data.type === 'pong'){
+          const rtt = (performance.now() - data.t).toFixed(1);
+          setKv('wsRtt', rtt + ' ms');
+          log.info('WS pong rtt='+rtt+'ms');
+          resolve();
+        }
+      };
+      ws.onerror = () => {
+        log.error('WS error');
+      };
+      ws.onclose = ev => {
+        log.muted('WS closed code='+ev.code+' reason='+(ev.reason||'(none)'));
+        if (ev.code !== 1000 && ev.code !== 1005){
+          setKv('wsStatus', 'closed code='+ev.code, 'bad');
+          setPill('pillWs', 'fail', 'fail');
+        }
+        resolve();
+      };
+    });
+  }
+
+  // ─── Mic probe ────────────────────────────────────────────────────
+  let _micCtx = null, _micRaf = 0;
+  async function probeMic(){
+    setPill('pillMic', 'probing', 'busy');
+    log.info('Requesting microphone…');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: {
+        echoCancellation: true, noiseSuppression: true
+      }});
+      const tracks = stream.getAudioTracks();
+      if (!tracks.length){
+        setKv('micPerm', 'granted but no track', 'warn');
+        setPill('pillMic', 'warn', 'warn');
+        log.warn('Mic granted but no audio track');
+        return;
+      }
+      const t = tracks[0];
+      const settings = t.getSettings ? t.getSettings() : {};
+      setKv('micPerm', 'granted', 'good');
+      setKv('micDevice', t.label || '(no label — needs HTTPS or user gesture)');
+      setKv('micSr', (settings.sampleRate || '?') + ' Hz');
+      setKv('micCh', settings.channelCount || '?');
+      log.ok('Mic OK:', t.label || '(unlabeled)', JSON.stringify(settings));
+
+      // Hook up a level meter for 6 seconds, then stop.
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        _micCtx = new AC();
+        const src = _micCtx.createMediaStreamSource(stream);
+        const an = _micCtx.createAnalyser(); an.fftSize = 1024;
+        src.connect(an);
+        const data = new Uint8Array(an.fftSize);
+        const tick = () => {
+          an.getByteTimeDomainData(data);
+          let peak = 0;
+          for (let i=0;i<data.length;i++){
+            const v = Math.abs(data[i]-128)/128;
+            if (v > peak) peak = v;
+          }
+          const bars = Math.round(peak * 24);
+          setKv('micLevel', '['+'█'.repeat(bars)+'·'.repeat(24-bars)+'] ' + (peak*100).toFixed(0)+'%');
+          _micRaf = requestAnimationFrame(tick);
+        };
+        _micRaf = requestAnimationFrame(tick);
+        setTimeout(() => {
+          if (_micRaf){ cancelAnimationFrame(_micRaf); _micRaf = 0; }
+          try { _micCtx && _micCtx.close(); } catch(_){}
+          _micCtx = null;
+          tracks.forEach(tr => tr.stop());
+          setKv('micLevel', 'meter stopped');
+        }, 6000);
+      } catch(e){ log.warn('Audio meter setup failed:', e && e.message); }
+
+      setPill('pillMic', 'ok', 'ok');
+    } catch (e){
+      setKv('micPerm', 'denied: ' + (e && e.message || e.name), 'bad');
+      setPill('pillMic', 'fail', 'fail');
+      log.error('Mic permission denied:', e && (e.name || e.message));
+    }
+  }
+
+  // ─── Master "run all" routine ─────────────────────────────────────
+  async function runAll(){
+    log.info('═══ FULL DIAGNOSTIC RUN ═══');
+    setKv('hdrMeta', 'running…');
+    document.getElementById('hdrMeta').textContent = 'running…';
+    const cfg = await probeApi();
+    await probeWs();
+    await probeMic();
+    if (cfg) await probeAllIce(cfg);
+    document.getElementById('hdrMeta').textContent = 'done · ' + new Date().toLocaleTimeString();
+    log.info('═══ DIAGNOSTIC COMPLETE ═══');
+  }
+
+  function escapeHtml(s){
+    return String(s||'').replace(/[&<>"']/g, ch => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[ch]));
+  }
+
+  // ─── Wire up buttons ──────────────────────────────────────────────
+  $('#btnRunAll').addEventListener('click', () => { runAll(); });
+  $('#btnClearLog').addEventListener('click', () => { $('#log').innerHTML = ''; });
+  $('#btnRetestIce').addEventListener('click', async () => {
+    const cfg = await probeApi();
+    if (cfg) await probeAllIce(cfg);
+  });
+  $('#btnTestMic').addEventListener('click', () => probeMic());
+  $('#btnTestWs').addEventListener('click', () => probeWs());
+
+  // Auto-run a light first probe (api only) so the page isn't blank.
+  probeApi();
+})();
+</script>
+</body>
+</html>

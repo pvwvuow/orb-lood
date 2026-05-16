@@ -13,7 +13,7 @@
 
   // bundle or the fresh one.
 
-  console.log('[orblood] client build 2026-05-16-k (DM: fix offline-user open crash; PWA settings menu-first; voice-debug page)');
+  console.log('[orblood] client build 2026-05-16-l (DM offline-open fix; PWA settings menu-first; voice-debug page at /voice-debug.html)');
 
   // Mobile orbit drawer removed per user request.
 
@@ -1900,7 +1900,7 @@
 
       voice.start(sid, ch).catch(e => {
         console.error('[voice] start failed:', e && e.message);
-        showToast('Voice connection failed. Check microphone permissions.', 'warn');
+        showToast('Voice connection failed. Check microphone permissions or open /voice-debug.html for full diagnostics.', 'warn');
       });
 
       // Ping is a voice-call-only metric (call quality indicator), so
@@ -10251,6 +10251,22 @@
         forceRelay = window.__forceRelay;
         _vlog.info('forceRelay overridden by window.__forceRelay =', window.__forceRelay);
 
+      }
+
+      // Defensive downgrade: forceRelay forces iceTransportPolicy:'relay',
+      // which filters out every host/srflx candidate. If the ICE config
+      // somehow ends up with zero TURN entries (only STUN, or empty), we
+      // would gather ZERO candidates and the call would silently never
+      // connect. Detect that case and downgrade to 'all' so at least P2P
+      // has a chance, plus log a loud warning so the operator knows the
+      // config is broken.
+      const hasTurnEntry = iceServers.some(s => {
+        const us = Array.isArray(s.urls) ? s.urls : [s.urls];
+        return us.some(u => /^turns?:/i.test(String(u || '')));
+      });
+      if (forceRelay && !hasTurnEntry) {
+        _vlog.error('forceRelay=true but ICE config has NO turn:/turns: entries — would gather zero candidates. Downgrading to forceRelay=false so P2P has a chance. Fix: configure TURN_URLS in server/.env.');
+        forceRelay = false;
       }
 
       _vlog.info('ICE config ready — forceRelay:', forceRelay, '| servers:', iceServers.length);

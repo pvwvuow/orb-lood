@@ -9,7 +9,7 @@
  *     bumped any time the build stamp in app.js changes; clients pick
  *     up the new bundle automatically on next load.
  */
-const CACHE_NAME = 'orblood-shell-v6-20260516c';
+const CACHE_NAME = 'orblood-shell-v7-20260516d';
 const SHELL_URLS = [
   '/',
   '/index.html',
