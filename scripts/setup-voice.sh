@@ -17,7 +17,10 @@
 #        - instance #2: 57344-65535
 #   6. Installs systemd unit coturn-443.service and enables both instances
 #   7. Fixes /var/log/turnserver*.log ownership so coturn can actually write
-#   8. Aligns server/.env so TURN_URLS lists all six transports in priority order
+#   8. Aligns server/.env so TURN_URLS is TCP-only by default — Iranian
+#      ISPs block outbound UDP at the carrier level, so any UDP relay URL
+#      stalls the browser for 30+ seconds and kills the call. Pass
+#      UDP_OK=1 to also include UDP transports if your ISP allows it.
 #   9. Opens UFW for every port we use
 #  10. Restarts coturn (both), then orblood
 #  11. Runs a self-test: turnutils_uclient against every transport, then a
@@ -29,6 +32,7 @@
 #   sudo bash scripts/setup-voice.sh diagnose        # read-only health check
 #   sudo bash scripts/setup-voice.sh verify          # auth + allocate test
 #   sudo bash scripts/setup-voice.sh sniff [seconds] # live tcpdump (default 30s)
+#   sudo bash scripts/setup-voice.sh call-test [secs]# combined sniff + log tail
 #   sudo bash scripts/setup-voice.sh logs            # tail both turnserver logs
 #
 # Environment overrides (rarely needed):
@@ -37,6 +41,7 @@
 #   INSTALL_DIR=/opt/orblood       # where the app + .env lives
 #   EXTERNAL_IP=<auto-detected>    # public IPv4 of the VPS
 #   ISSUE_CERT=1                   # set to 0 to skip Let's Encrypt
+#   UDP_OK=0                       # set to 1 to keep UDP relay URLs in .env
 # =============================================================================
 
 set -euo pipefail
@@ -56,6 +61,10 @@ TURN_HOST="${TURN_HOST:-turn.${DOMAIN}}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/orblood}"
 ENV_FILE="${INSTALL_DIR}/server/.env"
 ISSUE_CERT="${ISSUE_CERT:-1}"
+# UDP_OK=0 (default) drops every `?transport=udp` URL from TURN_URLS
+# because Iranian ISPs block outbound UDP and the browser stalls on
+# them for ~30s. Set UDP_OK=1 if you've verified UDP works end-to-end.
+UDP_OK="${UDP_OK:-0}"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -258,6 +267,67 @@ action_logs() {
   tail -F /var/log/turnserver.log /var/log/turnserver-443.log
 }
 
+# ─── action: call-test ──────────────────────────────────────────────────────
+# Combined diagnostic for the moment a real call is being placed.
+# Runs three streams in parallel for `secs` seconds:
+#   * tcpdump on every TURN port + the relay range
+#   * journalctl follow on the orblood backend (catches /voice/join 504s)
+#   * tail -F on both turnserver logs
+# Output is interleaved with [TCP], [BE], [T1], [T2] tags so you can tell
+# which stream each line came from. Press Ctrl+C any time to stop.
+action_call_test() {
+  local secs="${1:-45}"
+  command -v tcpdump >/dev/null || fail "tcpdump not installed (apt install tcpdump)"
+  touch /var/log/turnserver.log /var/log/turnserver-443.log
+
+  say "Combined call diagnostic — running for ${secs}s"
+  info "From a browser, START A CALL NOW between two users."
+  info "(Streams: TCP=tcpdump, BE=backend journal, T1/T2=coturn logs)"
+  echo
+
+  # We background each stream and prefix its output. timeout on the
+  # foreground wait gives us a deterministic stop. Using a temp dir for
+  # FIFOs keeps them off the working directory.
+  local tmp; tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"; jobs -p | xargs -r kill 2>/dev/null || true' EXIT
+
+  ( timeout "$secs" tcpdump -i any -nn -q \
+      "udp portrange 3478-3478 or tcp portrange 3478-3478 \
+       or udp portrange 5349-5349 or tcp portrange 5349-5349 \
+       or udp portrange 443-443  or tcp portrange 443-443 \
+       or udp portrange ${RELAY_LO_MIN}-${RELAY_HI_MAX}" \
+      2>&1 | sed -u 's/^/[TCP] /' ) &
+
+  ( timeout "$secs" journalctl -u orblood -f --no-pager \
+      2>&1 | sed -u 's/^/[BE] /' ) &
+
+  ( timeout "$secs" tail -F -n 0 /var/log/turnserver.log \
+      2>&1 | sed -u 's/^/[T1] /' ) &
+
+  ( timeout "$secs" tail -F -n 0 /var/log/turnserver-443.log \
+      2>&1 | sed -u 's/^/[T2] /' ) &
+
+  wait
+  echo
+  say "Diagnostic window closed."
+  cat <<EOM
+
+Quick reading guide:
+  * [TCP] In  IP <client>:<port> > <vps>:443 — packet reached TURN
+  * [TCP] In  IP <client>:<port> > <vps>:<49152-65535> — relay traffic
+                                                       (real audio!)
+  * [BE]  ERR 504 POST /api/channels/voice/.../join — backend hung
+                                                     (or DB locked)
+  * [BE]  SLOW 200 ... 5000ms — request was slow but did finish
+  * [T1]  ERROR: check_stun_auth — credential mismatch (rerun setup)
+  * [T1]  session ... allocate ... SUCCESS — coturn allocated a relay
+
+If [TCP] shows traffic to relay range but [BE] never logs the join, the
+problem is in voice signalling, not TURN. If [TCP] shows nothing during
+a call, packets aren't reaching the VPS at all (CDN/ISP/client issue).
+EOM
+}
+
 # ─── action: install / update (the default) ─────────────────────────────────
 action_install() {
   say "Installing prerequisites"
@@ -441,21 +511,43 @@ UNIT
   set_env TURN_USERNAME   "$TURN_USER"
   set_env TURN_PASSWORD   "$TURN_PASS"
   set_env VOICE_FORCE_RELAY "true"
-  # Six URLs, ordered by reliability on filtered networks:
-  #   1) turns:443?tcp   — TLS over 443, looks like HTTPS, hardest to block
-  #   2) turn:443?tcp    — plain TCP over 443
-  #   3) turn:443?udp    — UDP over 443 where ISP allows
-  #   4) turns:5349?tcp  — standard TURNS port
-  #   5) turn:3478?udp   — standard TURN UDP
-  #   6) turn:3478?tcp   — last-resort plain TCP
-  TURN_URLS="turns:${TURN_HOST}:443?transport=tcp"
-  TURN_URLS+=",turn:${TURN_HOST}:443?transport=tcp"
-  TURN_URLS+=",turn:${TURN_HOST}:443?transport=udp"
+  # TCP-only by default. Iranian ISPs block outbound UDP at the carrier
+  # level — every UDP relay URL in this list makes the browser sit on
+  # an ICE probe for ~30s before failing over. With force-relay set,
+  # that's a 30s gap before the call connects (or doesn't). The four
+  # TCP transports below have all been verified end-to-end.
+  #
+  # Order is what the browser tries first → last:
+  #   1) turn:443?tcp    — plain TCP on 443; tunnels through HTTP-CONNECT
+  #                        proxies, looks like generic HTTPS to DPI
+  #   2) turns:443?tcp   — TLS-wrapped TCP on 443; identical-on-the-wire
+  #                        to real HTTPS, hardest to fingerprint
+  #   3) turns:5349?tcp  — standard TURNS port
+  #   4) turn:3478?tcp   — last-resort plain TCP on the standard port
+  TURN_URLS="turn:${TURN_HOST}:443?transport=tcp"
+  TURN_URLS+=",turns:${TURN_HOST}:443?transport=tcp"
   TURN_URLS+=",turns:${TURN_HOST}:5349?transport=tcp"
-  TURN_URLS+=",turn:${TURN_HOST}:3478?transport=udp"
   TURN_URLS+=",turn:${TURN_HOST}:3478?transport=tcp"
+  if [ "$UDP_OK" = "1" ]; then
+    # Operator opted in to UDP. Append after the TCP entries so TCP
+    # still wins the race on networks that block UDP silently.
+    TURN_URLS+=",turn:${TURN_HOST}:443?transport=udp"
+    TURN_URLS+=",turn:${TURN_HOST}:3478?transport=udp"
+    info "UDP_OK=1 → adding UDP relay URLs after the TCP ones"
+  fi
   set_env TURN_URLS "$TURN_URLS"
-  ok ".env aligned (TURN_URLS has 6 transports)"
+  # Also clear VOICE_ALLOW_UDP to match — voice-config.js filters UDP
+  # URLs out of the response unless this is explicitly true.
+  if [ "$UDP_OK" = "1" ]; then
+    set_env VOICE_ALLOW_UDP "true"
+  else
+    set_env VOICE_ALLOW_UDP "false"
+  fi
+  if [ "$UDP_OK" = "1" ]; then
+    ok ".env aligned (TURN_URLS has 6 transports — TCP first, then UDP)"
+  else
+    ok ".env aligned (TURN_URLS has 4 TCP transports; UDP disabled)"
+  fi
 
   # ── firewall ─────────────────────────────────────────────────────────────
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
@@ -542,21 +634,29 @@ EOM
 
 # ─── dispatch ───────────────────────────────────────────────────────────────
 case "${1:-install}" in
-  install|update|"") action_install ;;
-  diagnose|status)   action_diagnose ;;
-  verify|test)       action_verify ;;
-  sniff|capture)     action_sniff "${2:-30}" ;;
-  logs|tail)         action_logs ;;
+  install|update|"")  action_install ;;
+  diagnose|status)    action_diagnose ;;
+  verify|test)        action_verify ;;
+  sniff|capture)      action_sniff "${2:-30}" ;;
+  call-test|call)     action_call_test "${2:-45}" ;;
+  logs|tail)          action_logs ;;
   *)
     cat <<EOM
 Usage: sudo bash $0 [command]
 
 Commands:
-  install   (default) full setup/update — idempotent
-  diagnose             read-only health check
-  verify               run turnutils_uclient against every transport
-  sniff [secs]         live tcpdump on TURN ports (default 30s)
-  logs                 tail -F /var/log/turnserver*.log
+  install     (default) full setup/update — idempotent
+  diagnose                read-only health check
+  verify                  run turnutils_uclient against every transport
+  sniff [secs]            live tcpdump on TURN ports (default 30s)
+  call-test [secs]        combined tcpdump + backend log + coturn log
+                          (best for diagnosing a real call; default 45s)
+  logs                    tail -F /var/log/turnserver*.log
+
+Environment:
+  UDP_OK=1                also include UDP transports in TURN_URLS
+                          (default: TCP-only — Iranian ISPs block UDP)
+  ISSUE_CERT=0            skip the Let's Encrypt step
 EOM
     exit 1
     ;;

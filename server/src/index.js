@@ -44,6 +44,30 @@ app.use(cors({
   credentials: true
 }));
 
+// --- request-timing logger ---
+// CDNs in front of us (ArvanCloud) time out at ~30s and turn the response
+// into a 504 Gateway Timeout that hides whatever the backend was doing.
+// When that happens the journal gives no clue — `journalctl -u orblood`
+// just shows the request never finished. So: log every request that
+// either errors or runs longer than VERBOSE_REQUEST_MS (default 2s),
+// with the duration and the status. Voice/join in particular started
+// hanging long enough for the CDN to give up; this turns those events
+// into a single grep-able line.
+const VERBOSE_REQUEST_MS = parseInt(process.env.VERBOSE_REQUEST_MS || '2000', 10);
+app.use((req, res, next) => {
+  const t0 = Date.now();
+  res.on('finish', () => {
+    const dur = Date.now() - t0;
+    const slow = dur >= VERBOSE_REQUEST_MS;
+    const bad  = res.statusCode >= 500;
+    if (slow || bad) {
+      const tag = bad ? 'ERR ' : 'SLOW';
+      console.warn(`[req] ${tag} ${res.statusCode} ${req.method} ${req.originalUrl} ${dur}ms`);
+    }
+  });
+  next();
+});
+
 // 8MB headroom — avImage / bannerImage can come in as base64 data URLs when
 // the multipart upload endpoint is unreachable (offline / static-only host).
 // The matching schema column is MEDIUMTEXT (~16MB) and the validator allows

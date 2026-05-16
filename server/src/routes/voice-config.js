@@ -15,16 +15,33 @@ export const voiceConfigRouter = Router();
 voiceConfigRouter.get('/voice/config', requireAuth, (_req, res) => {
   const ice = [];
 
-  if (config.voice.urls.length) {
+  // On filtered networks (Iran in particular) outbound UDP is dropped
+  // at the carrier level. With iceTransportPolicy:'relay' set, every
+  // RTP packet flows through TURN — so a single UDP relay URL in the
+  // candidate list causes the browser to spend 30+ seconds probing it
+  // before failing over to TCP, and the call dies on the wait.
+  //
+  // Filter UDP transports out of TURN URLs unless the operator
+  // explicitly opts in by setting VOICE_ALLOW_UDP=true. STUN URLs
+  // (which are read-only and don't carry media) are kept as-is.
+  const allowUdp = String(process.env.VOICE_ALLOW_UDP || '').toLowerCase() === 'true';
+  const isUdpTurn = u => /^turns?:/.test(u) && /[?&]transport=udp(\b|$)/i.test(u);
+  const turnUrls = allowUdp
+    ? config.voice.urls
+    : config.voice.urls.filter(u => !isUdpTurn(u));
+
+  if (turnUrls.length) {
     // Primary: operator-configured TURN/STUN (coturn on your own server).
     ice.push({
-      urls: config.voice.urls,
+      urls: turnUrls,
       username: config.voice.username,
       credential: config.voice.password
     });
 
     // Also expose the same host as a STUN endpoint (free, no auth needed).
-    const stunUrls = config.voice.urls
+    // STUN doesn't carry media, only does NAT discovery — keeping it on
+    // UDP is fine even when TURN is forced to TCP.
+    const stunUrls = turnUrls
       .map(u => u.replace(/^turns?:/, 'stun:').split('?')[0])
       .filter((u, i, arr) => arr.indexOf(u) === i);
     if (stunUrls.length) ice.push({ urls: stunUrls });
