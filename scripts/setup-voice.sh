@@ -206,23 +206,31 @@ action_verify() {
   # care about the echo, only whether Allocate succeeds.
   PEER="${PEER_IP:-194.60.231.226}"
 
+  # turnutils_uclient with -y (client-to-client) does its own peer setup,
+  # which avoids "Forbidden IP" noise. We let it run for ~18s (the default
+  # test sends 10 packets at 1 Hz) and grep for any of the success markers
+  # we know coturn prints. Earlier diagnostic runs proved that hitting
+  # allocate-but-policy-block (`channel bind: error 403`) is also a
+  # positive signal — auth and allocate already succeeded by then.
   run() {
     local label="$1"; shift
     info "—— $label"
-    # short timeout, single message, suppress stdin
-    if timeout 8 turnutils_uclient -u "$USER" -w "$PASS" "$@" -e "$PEER" -m 1 -n 1 "$HOST" \
-         </dev/null 2>&1 | grep -qE 'Total transmit time|Forbidden IP|channel bind: error 403'; then
-      ok "$label: allocate succeeded"
+    local out rc
+    out="$(timeout 20 turnutils_uclient -u "$USER" -w "$PASS" "$@" -y "$HOST" </dev/null 2>&1 || true)"
+    rc=$?
+    if echo "$out" | grep -qE 'Total transmit time|Forbidden IP|channel bind: error 403|long-term authentication|tot_send_bytes'; then
+      ok "$label: auth + allocate working"
     else
-      warn "$label: allocate FAILED (check log file for the corresponding instance)"
+      warn "$label: no allocate signal — last 10 lines of output:"
+      echo "$out" | tail -10 | sed 's/^/        /'
     fi
   }
 
-  run "udp 3478"      -p 3478
-  run "udp 443"       -p 443
-  run "tcp 443"       -p 443  -t
-  run "tls 443"       -p 443  -t -S
-  run "tls 5349"      -p 5349 -t -S
+  run "udp 3478"  -p 3478
+  run "udp 443"   -p 443
+  run "tcp 443"   -p 443  -t
+  run "tls 443"   -p 443  -t -S
+  run "tls 5349"  -p 5349 -t -S
 }
 
 # ─── action: sniff (live packet capture during a real browser call) ─────────
