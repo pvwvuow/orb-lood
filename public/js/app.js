@@ -18108,7 +18108,11 @@
   // True when the viewport is mobile-sized. We use master-detail navigation
   // there: tap a row → opens the pane full-screen with a Back button in the
   // header. The CSS that drives this lives behind the `.settings-detail`
-  // class on #profileModal.
+  // class on #profileModal (scoped to @media (max-width:760px)). The PWA
+  // on a phone is < 760px so it picks this path naturally; PWAs installed
+  // on desktops still get the desktop side-by-side layout, which already
+  // works as a proper menu (no extra detail-flow needed since the user
+  // sees both the categories AND the active pane at once).
   function _isMobileSettings(){ return window.matchMedia('(max-width:760px)').matches; }
 
   function _exitSettingsDetail(){
@@ -23004,9 +23008,16 @@
     // Without enterProfileEdit() the modal opens in read-only view mode
     // and the user has to take an extra click to reach Settings — which
     // was the "button doesn't do anything useful" complaint.
+    //
+    // On mobile/PWA we deliberately stop here so the user lands on the
+    // categories list (Profile / Login / Privacy / ...) and picks one.
+    // The previous build called setSettingsTab('profile') here, which
+    // immediately flipped the modal into the Profile detail pane —
+    // exactly the "skip the menu" behaviour we wanted to fix. Desktop
+    // still shows sidebar + content together, so no detail-jump is
+    // needed there either.
     openProfile(null);
     try { enterProfileEdit(); } catch(_){}
-    try { setSettingsTab('profile'); } catch(_){}
   });
 
   refreshIcons();

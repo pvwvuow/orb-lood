@@ -1641,13 +1641,20 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
   /* Footer (Cancel / Save) sticks to the bottom on detail panes that
      accept input (profile / login). For info-only panes we still
-     show the row but it's harmless. */
+     show the row but it's harmless. On the menu-list view (mobile,
+     not in detail mode) hide the foot — there's no field to save and
+     it would otherwise show up at the bottom of the categories list,
+     which made the list look like the bottom row of a half-finished
+     form. This rule is INSIDE the @media (max-width:760px) block so
+     desktop continues to show the foot whenever .is-editing is on. */
   #profileModal.is-editing .profile-edit-foot{
     flex-shrink:0;
     padding:10px 12px;
     border-top:1px solid var(--gb);
     background:var(--bg);
   }
+
+  #profileModal.is-editing:not(.settings-detail) .profile-edit-foot{display:none}
 
 }
 
@@ -3443,6 +3450,12 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 .cv-prev-title{font-family:'Space Grotesk','Vazirmatn','Space Mono','Vazirmatn',monospace;font-size:1rem;font-weight:700;letter-spacing:1px;color:var(--t1);margin-top:3px}
 
 .smodal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--tint-3)}
+
+/* Back button lives inside the modal head. By default it's hidden — only
+   the master-detail mobile flow surfaces it via a media-query rule below.
+   Keeping the default here means desktop users never see a stray BACK
+   chip when no detail pane is active. */
+.settings-back-btn{display:none}
 
 .smodal-title{font-family:'Space Mono','Vazirmatn',monospace;font-size:0.78rem;letter-spacing:2px;color:var(--t1)}
 
