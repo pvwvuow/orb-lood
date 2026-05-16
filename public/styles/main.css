@@ -1517,46 +1517,137 @@ body{font-family:'Inter','Vazirmatn',-apple-system,sans-serif;background:var(--b
 
 .settings-content > .settings-pane.active{display:flex}
 
-/* Mobile / PWA: keep the same vertical-list layout as the roles &
-   permissions modal instead of squishing the nav into a horizontal
-   scrollbar. The roles modal stays as a 2-column layout at every
-   width, so the settings panel matches that pattern. The sidebar
-   becomes a fixed-width vertical column on the left (narrower than
-   desktop to leave room for content), section headers stay visible
-   so groups read naturally, and active selection is clearly
-   highlighted. */
+/* Mobile / PWA: replace the cramped two-column layout with an
+   iOS/Android-style master-detail navigation. The settings modal
+   first shows a full-width category list with section headers and
+   chevrons. Tapping a category slides the detail pane into view;
+   a back button in the modal head returns to the list. This gives
+   each settings pane the entire modal width to breathe instead of
+   sharing 50–60% of a small phone screen with a sidebar.
+
+   Desktop (>=761px) keeps the two-column sidebar+content layout
+   defined above. */
 @media (max-width:760px){
 
-  #profileModal.is-editing .profile-edit{flex-direction:row}
-
-  .settings-side{
-    width:148px;flex-shrink:0;
-    border-right:1px solid var(--gb);
-    border-bottom:none;
-    flex-direction:column;
-    overflow-y:auto;overflow-x:hidden;
-    padding:10px 6px;gap:2px;
+  /* Modal can fill the screen on mobile so the master-detail flow
+     gets every available pixel. The 96vw / 88vh from desktop is
+     overridden here. */
+  #profileModal.is-editing{
+    max-width:100vw !important;width:100vw !important;
+    max-height:100vh !important;height:100dvh !important;
+    border-radius:0;
   }
 
+  #profileModal.is-editing .profile-edit{
+    flex-direction:column;
+    overflow:hidden;min-height:0;
+  }
+
+  /* Sidebar becomes the full-width "master" list.
+     - When the modal is in list mode, the sidebar is shown full-width.
+     - When the user picks a pane, the modal flips to detail mode and
+       the sidebar slides off, content slides in. */
+  .settings-side{
+    width:100%;flex-shrink:0;
+    border-right:none;border-bottom:1px solid var(--gb);
+    flex-direction:column;
+    overflow-y:auto;overflow-x:hidden;
+    padding:6px 4px 18px;gap:2px;
+    /* Hide outright when a detail pane is active so the content area
+       gets the full width. */
+  }
+
+  #profileModal.is-editing.settings-detail .settings-side{display:none}
+  #profileModal.is-editing:not(.settings-detail) .settings-content{display:none}
+
+  /* Section group headers — used as visual dividers in the list */
   .settings-side-h{
     display:block;
     font-family:'Space Mono','Vazirmatn',monospace;
-    font-size:0.5rem;letter-spacing:1.4px;
-    color:var(--t3);padding:6px 6px 4px;
-    margin-top:4px;
+    font-size:0.55rem;letter-spacing:1.5px;
+    color:var(--t3);padding:14px 14px 6px;
+    margin-top:0;
   }
+  .settings-side-h:first-child{padding-top:8px}
 
-  .settings-side-h:first-child{margin-top:0}
-
+  /* Each row is now a full-width tappable card with a chevron at the
+     end. Mirrors iOS Settings groups. */
   .settings-side-item{
     flex-shrink:0;
-    padding:8px 9px;
-    font-size:0.62rem;letter-spacing:1px;
-    border-radius:8px;
+    display:flex;align-items:center;gap:12px;
+    padding:13px 14px;
+    font-size:0.7rem;letter-spacing:1px;
+    border-radius:10px;
     white-space:normal;line-height:1.25;
+    margin:0 6px;
+    background:transparent;
+    position:relative;
   }
 
-  .settings-side-item i{width:12px;height:12px}
+  .settings-side-item i{width:15px;height:15px;flex-shrink:0;color:var(--t2)}
+
+  /* Chevron at the end of every row — except the ones that link out
+     (voice settings, change server) which carry their own external
+     icon. We add it via ::after so existing markup keeps working. */
+  .settings-side-item:not([data-st-action])::after{
+    content:'';
+    margin-left:auto;flex-shrink:0;
+    width:8px;height:8px;
+    border-right:1.5px solid var(--t3);
+    border-top:1.5px solid var(--t3);
+    transform:rotate(45deg);
+    opacity:0.6;
+  }
+
+  /* Active state hidden in list mode (no point highlighting since the
+     user always sees the whole list). It only matters in detail mode,
+     which on mobile shows the pane full-screen anyway. */
+  .settings-side-item.active{background:transparent;border-color:transparent;color:var(--t1)}
+  .settings-side-item:hover,.settings-side-item:active{background:var(--tint-2)}
+
+  /* Detail mode: content fills the modal body. */
+  #profileModal.is-editing.settings-detail .settings-content{
+    flex:1;min-height:0;min-width:0;width:100%;
+    overflow-y:auto;
+  }
+
+  #profileModal.is-editing.settings-detail .settings-pane{
+    padding:14px 14px 24px;
+  }
+
+  /* Back button (rendered into the modal head) only visible in detail
+     mode on mobile. Hidden by default — JS toggles
+     #profileModal.settings-detail to flip it on. */
+  .settings-back-btn{
+    display:none;
+    align-items:center;gap:6px;
+    background:transparent;border:none;color:var(--t1);
+    cursor:pointer;
+    font-family:'Space Mono','Vazirmatn',monospace;
+    font-size:0.72rem;letter-spacing:1.2px;
+    padding:6px 8px 6px 4px;border-radius:6px;
+  }
+  .settings-back-btn:hover{background:var(--tint-2)}
+  .settings-back-btn i{width:15px;height:15px}
+
+  #profileModal.is-editing.settings-detail .settings-back-btn{display:inline-flex}
+
+  /* Hide the smodal-title when in settings list mode so the modal
+     head reads as a clean group list header; show a custom title
+     when in detail mode that names the active pane. */
+  #profileModal.is-editing .smodal-title{
+    font-size:0.78rem;
+  }
+
+  /* Footer (Cancel / Save) sticks to the bottom on detail panes that
+     accept input (profile / login). For info-only panes we still
+     show the row but it's harmless. */
+  #profileModal.is-editing .profile-edit-foot{
+    flex-shrink:0;
+    padding:10px 12px;
+    border-top:1px solid var(--gb);
+    background:var(--bg);
+  }
 
 }
 
@@ -4108,33 +4199,11 @@ select.sm-input option{background:var(--panel);color:var(--t1);padding:6px 10px}
   /* Orbits FAB: show inline in taskbar instead of floating */
   .orb-col-fab{display:none !important}
   .orb-col-fab-inline{display:flex}
-  /* Settings: side-by-side sidebar + content, mirroring the roles &
-     permissions modal layout. Section headers stay visible so groups
-     are organised even on the smallest screens. The horizontal-scroll
-     row variant we used to ship felt cramped and out of step with the
-     rest of the modal family. */
-  #profileModal.is-editing .profile-edit{flex-direction:row !important;overflow:hidden}
-  .settings-side{
-    width:138px !important;
-    flex-direction:column !important;flex-wrap:nowrap;
-    border-right:1px solid var(--gb);border-bottom:none !important;
-    padding:10px 6px !important;gap:2px !important;
-    overflow-x:hidden;overflow-y:auto;
-  }
-  .settings-side-h{
-    display:block !important;
-    font-family:'Space Mono','Vazirmatn',monospace;
-    font-size:0.48rem !important;letter-spacing:1.3px;
-    color:var(--t3);padding:6px 6px 4px;
-    margin-top:4px;
-  }
-  .settings-side-h:first-child{margin-top:0}
-  .settings-side-item{
-    padding:7px 8px !important;font-size:0.55rem !important;
-    white-space:normal;line-height:1.25;
-    border-radius:8px;flex-shrink:0;
-  }
-  .settings-content{overflow-y:auto;flex:1;min-height:0;min-width:0}
+  /* Settings on mobile is rendered as a master-detail flow — see the
+     dedicated @media block higher up in this file (around line 1521).
+     The legacy two-column overrides used to live here but they fought
+     the new layout; everything settings-related on mobile is owned by
+     that block now. */
 
   .ph-title{font-size:0.7rem}
 

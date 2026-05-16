@@ -13,7 +13,7 @@
 
   // bundle or the fresh one.
 
-  console.log('[orblood] client build 2026-05-16-i (PWA: full-screen install + skeleton DM loader + offline DM history fix + organized settings menu)');
+  console.log('[orblood] client build 2026-05-16-j (PWA: master-detail mobile settings + instant DM preview render for offline contacts)');
 
   // Mobile orbit drawer removed per user request.
 
@@ -2352,31 +2352,49 @@
     // those are 1-message stubs that look like real history but aren't, and
     // rendering them on every switch was producing the "stale chat from the
     // last person you talked to" bug when conversations[k] had a leftover
-    // preview row from the snapshot. The backend.dms.list call below is the
-    // real source of truth; drop previews so the loading spinner shows
-    // until the real history arrives.
+    // preview row from the snapshot.
+    //
+    // EXCEPTION: keep the preview around so the user sees *something*
+    // immediately while the real history loads. The render path below
+    // will paint it; the GET /dms response then merges the full thread
+    // back in without flicker. This is what makes offline contacts
+    // feel as snappy as online ones — the snapshot already has their
+    // last message, so the chat shows up the instant we open it.
+    let onlyPreviewSeed = false;
     if (messages[key] && messages[key].length){
-      const onlyPreviews = messages[key].every(m => m && m._preview);
-      if (onlyPreviews) messages[key] = [];
+      onlyPreviewSeed = messages[key].every(m => m && m._preview);
     }
 
     if (backend.isConfigured() && key && key !== 'saved'){
 
-      // Always show the loading skeleton first. Even if messages[key]
-      // has entries, those may be stale from a prior session or a
-      // snapshot preview that was overwritten when the user sent a new
-      // message in a *different* conversation. The backend round-trip
-      // below fills in the real history within a few hundred ms; the
-      // skeleton makes the switch feel instant and avoids the
-      // "previous chat is showing" perception when the cached array
-      // happens to carry stale rows.
+      // Decide between three states for the body:
+      //   1. We have real cached messages (this session has previously
+      //      fetched history or just received a WS push). Paint them
+      //      immediately and silently refresh in the background.
+      //   2. We only have a preview seed from the snapshot. Paint the
+      //      preview immediately so the user sees the last message
+      //      from this peer right away — even when they're offline —
+      //      and let the GET /dms call replace it with the full thread.
+      //   3. We have nothing. Show the skeleton.
       //
-      // Use the same .sk-dm-bubble skeleton as the rest of the app
-      // (Home, Orbits, DM list) instead of a plain "Loading messages…"
-      // string — the user explicitly asked for the skeleton style and
-      // it gives a better perceived-performance signal anyway.
+      // The previous build always took path #3 for any non-cached
+      // thread, which is why offline contacts felt slow: their thread
+      // started at "skeleton → wait → bubbles", whereas online ones
+      // routinely had cached messages from prior WS pushes and went
+      // straight to "bubbles". Now both paths feel the same.
 
-      _msgsEl.innerHTML = _dmSkeletonHtml();
+      const hasRealCached = !onlyPreviewSeed
+        && messages[key]
+        && messages[key].length > 0;
+
+      if (hasRealCached || onlyPreviewSeed){
+        // Paint what we have (cached history OR preview) right now.
+        // renderConversation reads from messages[key] directly.
+        renderConversation();
+      } else {
+        // Truly empty — show the skeleton until the fetch resolves.
+        _msgsEl.innerHTML = _dmSkeletonHtml();
+      }
 
       // Reset the historyFetched flag for THIS key so the fetch path below
       // always runs (don't let a stale flag from a previous session skip
@@ -2384,6 +2402,11 @@
       if (conversations[key]) conversations[key]._historyFetched = false;
 
     } else {
+
+      // Drop preview-only seeds for the offline / Saved Messages path —
+      // there's no fetch coming behind to replace them, and they'd
+      // leave a stale stub bubble in the thread.
+      if (onlyPreviewSeed) messages[key] = [];
 
       renderConversation();
 
@@ -12692,6 +12715,22 @@
 
     document.getElementById('profileModal').classList.add('is-editing');
 
+    // Title flips to "// SETTINGS" while we're in the categories list;
+    // it changes again to the active pane name once the user picks one.
+    const t = document.getElementById('profileModalTitle');
+    if (t) t.textContent = '// SETTINGS';
+
+    // On mobile we always start in the list view (no pane selected yet)
+    // so the user can pick a category. Desktop stays in the always-side-
+    // by-side layout, where the active pane (defaulted to 'profile' by
+    // openProfile) stays visible.
+    if (_isMobileSettings()){
+      _exitSettingsDetail();
+      // Clear the .active highlight that openProfile set on the profile
+      // tab — the active highlight only matters in detail mode on mobile.
+      document.querySelectorAll('.settings-side-item').forEach(x => x.classList.remove('active'));
+    }
+
   }
 
   function cancelProfileEdit(){
@@ -12699,6 +12738,12 @@
     profileEditingSelf = false;
 
     document.getElementById('profileModal').classList.remove('is-editing');
+
+    document.getElementById('profileModal').classList.remove('settings-detail');
+
+    const t = document.getElementById('profileModalTitle');
+
+    if (t) t.textContent = '// PROFILE';
 
   }
 
@@ -18044,6 +18089,38 @@
 
   // Settings sidebar nav + color picker + notif toggles
 
+  // True when the viewport is mobile-sized. We use master-detail navigation
+  // there: tap a row → opens the pane full-screen with a Back button in the
+  // header. The CSS that drives this lives behind the `.settings-detail`
+  // class on #profileModal.
+  function _isMobileSettings(){ return window.matchMedia('(max-width:760px)').matches; }
+
+  function _exitSettingsDetail(){
+    const modal = document.getElementById('profileModal');
+    if (!modal) return;
+    modal.classList.remove('settings-detail');
+    const t = document.getElementById('profileModalTitle');
+    if (t) t.textContent = '// SETTINGS';
+  }
+
+  function _enterSettingsDetail(label){
+    const modal = document.getElementById('profileModal');
+    if (!modal) return;
+    modal.classList.add('settings-detail');
+    const t = document.getElementById('profileModalTitle');
+    if (t && label) t.textContent = '// '+label.toUpperCase();
+  }
+
+  // Pull the visible label off a sidebar item (strip away the icon SVG and
+  // any trailing badges). Lets the detail-view title match what the user
+  // tapped without us having to maintain a parallel label table.
+  function _settingsItemLabel(btn){
+    if (!btn) return '';
+    const clone = btn.cloneNode(true);
+    clone.querySelectorAll('i,svg,.badge').forEach(n => n.remove());
+    return (clone.textContent || '').trim();
+  }
+
   function setSettingsTab(tab){
 
     document.querySelectorAll('.settings-side-item').forEach(x => x.classList.toggle('active', x.dataset.stTab === tab));
@@ -18059,6 +18136,16 @@
     if (tab === 'appearance'){ syncThemePicker(); }
 
     if (tab === 'notif'){ renderNotifPanel(); }
+
+    // Mobile master-detail: flip the modal into detail view and put the
+    // pane name in the header so the user knows where they are. Only
+    // when the modal is in edit mode — calling setSettingsTab from
+    // openProfile (to seed defaults) shouldn't push us into detail.
+    const _modal = document.getElementById('profileModal');
+    if (_isMobileSettings() && _modal && _modal.classList.contains('is-editing')){
+      const item = document.querySelector('.settings-side-item[data-st-tab="'+tab+'"]');
+      _enterSettingsDetail(_settingsItemLabel(item) || tab);
+    }
 
   }
 
@@ -18085,6 +18172,30 @@
     setSettingsTab(t.dataset.stTab);
 
   }));
+
+  // Back button (mobile only) — returns from a detail pane to the list.
+  // Hidden via CSS unless #profileModal has .settings-detail.
+  (function(){
+    const back = document.getElementById('settingsBackBtn');
+    if (back){
+      back.addEventListener('click', e => {
+        e.stopPropagation();
+        _exitSettingsDetail();
+      });
+    }
+    // If the viewport flips back to desktop while a user is in detail
+    // view, drop the detail-mode flag so the desktop layout (sidebar +
+    // content always visible together) renders cleanly. The CSS handles
+    // the rest.
+    window.addEventListener('resize', () => {
+      if (!_isMobileSettings()){
+        const m = document.getElementById('profileModal');
+        if (m && m.classList.contains('settings-detail')){
+          m.classList.remove('settings-detail');
+        }
+      }
+    });
+  })();
 
   // Reveal desktop-only entries when running inside Electron.
 
