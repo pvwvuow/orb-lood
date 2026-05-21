@@ -1,0 +1,31 @@
+; coturn second instance, listening on :443.
+;
+; Install:
+;   sudo cp coturn-443.service /etc/systemd/system/coturn-443.service
+;   sudo systemctl daemon-reload
+;   sudo systemctl enable --now coturn-443
+;
+; The default `coturn.service` (shipped by the Ubuntu package) keeps
+; running and serves :3478 / :5349. This unit adds the second instance
+; that handles :443 — see turnserver-443.conf and COTURN-SETUP.md for
+; why both are required to reach Iranian mobile users.
+[Unit]
+Description=coTURN STUN/TURN Server (port 443)
+After=network.target
+; Start after the standard coturn unit so they don't race for relay
+; ports during boot.
+After=coturn.service
+
+[Service]
+Type=simple
+User=turnserver
+Group=turnserver
+ExecStart=/usr/bin/turnserver -c /etc/turnserver-443.conf
+; coturn is allowed to bind a privileged port (443) without running
+; as root. This is safer than removing User=.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
