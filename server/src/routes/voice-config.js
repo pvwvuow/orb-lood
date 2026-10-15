@@ -1,113 +1,73 @@
+import crypto from 'node:crypto';
 import { Router } from 'express';
 import { config } from '../config.js';
 import { requireAuth } from '../auth/middleware.js';
 
 export const voiceConfigRouter = Router();
 
-// The frontend calls this to learn which TURN/STUN servers to use when
-// negotiating WebRTC. Keeping the credential server-side means we don't ship
-// the long-lived key to the browser bundle.
+// The frontend calls this to learn which TURN/STUN servers to use.
 //
-// For users in Iran (or any filtered network), all external STUN/TURN servers
-// (Google, Metered, Twilio, etc.) are blocked. The solution is to run coturn
-// on the SAME server that hosts this app, so all ICE traffic stays on our own
-// domain/IP which is already reachable by clients.
-voiceConfigRouter.get('/voice/config', requireAuth, (_req, res) => {
-  // Hard no-cache. Browsers and CDNs LOVE caching this endpoint, and a
-  // stale response means one peer ends up on the previous deploy's
-  // TURN_URLS while the other peer hits the new ones — they then talk
-  // to different coturn instances and the call dies silently. We saw
-  // this in production: peer A still using turn:3478 from an old
-  // cache, peer B on the freshly-deployed turn:443. The fix is to
-  // never let this response be cached anywhere.
+// Users in Iran (or any filtered network) cannot reach external STUN/TURN
+// servers, so coturn runs on our own VPS (turn.<domain>, NOT behind the CDN).
+//
+// Credentials: when TURN_SECRET is set (coturn `use-auth-secret`), every
+// call gets its own short-lived username/password (TURN REST API scheme):
+//   username   = "<expiry-unix-ts>:<user-id>"
+//   credential = base64(HMAC-SHA1(TURN_SECRET, username))
+// so nothing long-lived ever reaches a browser or the debug page.
+voiceConfigRouter.get('/voice/config', requireAuth, (req, res) => {
+  // Never cacheable: a stale copy once put two peers on different coturn
+  // instances and the call died silently.
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
+  const creds = turnCredentials(req.user.id);
   const ice = [];
 
-  // On filtered networks (Iran in particular) outbound UDP is dropped
-  // at the carrier level. With iceTransportPolicy:'relay' set, every
-  // RTP packet flows through TURN — so a single UDP relay URL in the
-  // candidate list causes the browser to spend 30+ seconds probing it
-  // before failing over to TCP, and the call dies on the wait.
-  //
-  // Filter UDP transports out of TURN URLs unless the operator
-  // explicitly opts in by setting VOICE_ALLOW_UDP=true. STUN URLs
-  // (which are read-only and don't carry media) are kept as-is.
-  const allowUdp = String(process.env.VOICE_ALLOW_UDP || '').toLowerCase() === 'true';
-  const isUdpTurn = u => /^turns?:/.test(u) && /[?&]transport=udp(\b|$)/i.test(u);
-  const turnUrls = allowUdp
-    ? config.voice.urls
-    : config.voice.urls.filter(u => !isUdpTurn(u));
+  // On filtered networks outbound UDP is dropped at the carrier level, and
+  // with iceTransportPolicy:'relay' a UDP TURN URL just burns 30 s of ICE
+  // time. UDP TURN URLs are dropped unless VOICE_ALLOW_UDP=true.
+  const isUdpTurn = u => /^turns?:/.test(u) && !/[?&]transport=tcp\b/i.test(u) && (/[?&]transport=udp\b/i.test(u) || !/^turns:/.test(u) && !/\?/.test(u));
+  const turnOnly = config.voice.urls.filter(u => /^turns?:/.test(u));
+  const turnUrls = config.voice.allowUdp ? turnOnly : turnOnly.filter(u => !isUdpTurn(u));
+  const stunConfigured = config.voice.urls.filter(u => /^stun:/.test(u));
 
-  if (turnUrls.length) {
-    // Primary: operator-configured TURN/STUN (coturn on your own server).
-    ice.push({
-      urls: turnUrls,
-      username: config.voice.username,
-      credential: config.voice.password
-    });
-
-    // Also expose the same host as a STUN endpoint (free, no auth needed).
-    // STUN doesn't carry media, only does NAT discovery — keeping it on
-    // UDP is fine even when TURN is forced to TCP.
-    const stunUrls = turnUrls
-      .map(u => u.replace(/^turns?:/, 'stun:').split('?')[0])
-      .filter((u, i, arr) => arr.indexOf(u) === i);
-    if (stunUrls.length) ice.push({ urls: stunUrls });
+  if (turnUrls.length && creds) {
+    ice.push({ urls: turnUrls, username: creds.username, credential: creds.credential });
   }
 
-  // If no TURN is configured at all, use the server's own public IP/domain
-  // as a minimal STUN endpoint. This won't relay but at least lets peers on
-  // the same network or with compatible NATs connect directly.
-  if (!ice.length) {
-    // Derive host from PUBLIC_ORIGIN (e.g. https://chat.example.com → chat.example.com)
-    const host = config.voice.selfHost || _extractHost(config.publicOrigin);
-    if (host) {
-      // STUN on port 3478 (coturn default) — works even without credentials.
-      ice.push({ urls: [`stun:${host}:3478`] });
-      // TURN UDP
-      ice.push({
-        urls: [`turn:${host}:3478`],
-        username: config.voice.username || 'orblood',
-        credential: config.voice.password || 'orblood'
-      });
-      // TURN TCP (for restrictive firewalls that block UDP)
-      ice.push({
-        urls: [`turn:${host}:3478?transport=tcp`],
-        username: config.voice.username || 'orblood',
-        credential: config.voice.password || 'orblood'
-      });
-      // TURNS over 443 (looks like HTTPS, hardest to block)
-      ice.push({
-        urls: [`turns:${host}:5349`],
-        username: config.voice.username || 'orblood',
-        credential: config.voice.password || 'orblood'
-      });
-    }
-  }
+  // STUN on the same host (no auth, no media). Harmless even when TURN is
+  // TCP-only.
+  const stunUrls = stunConfigured.length
+    ? stunConfigured
+    : turnUrls.map(u => u.replace(/^turns?:/, 'stun:').split('?')[0]);
+  const uniqueStun = [...new Set(stunUrls)];
+  if (uniqueStun.length) ice.push({ urls: uniqueStun });
 
-  // NOTE: We intentionally do NOT add Google/Metered/external STUN as
-  // fallback because those are blocked in Iran and would only cause
-  // timeouts that slow down ICE gathering.
+  const hasRelay = ice.some(e => (Array.isArray(e.urls) ? e.urls : [e.urls]).some(u => /^turns?:/.test(u)));
 
-  // forceRelay tells the client to set iceTransportPolicy:'relay' so every
-  // RTP packet flows through our coturn server. This is what makes voice
-  // actually work on heavily-filtered networks (Iran, China, corporate
-  // firewalls) where direct P2P fails. Operators on open networks can flip
-  // VOICE_FORCE_RELAY=false in .env to allow P2P (saves coturn bandwidth).
+  // NOTE: no Google/Metered fallback on purpose: blocked in Iran, they only
+  // slow ICE gathering down. And no invented credentials: if TURN is not
+  // configured we say so instead of handing out a guess that cannot work.
   res.json({
     iceServers: ice,
-    forceRelay: config.voice.forceRelay !== false
+    // Forcing relay without a TURN server would gather zero candidates.
+    forceRelay: config.voice.forceRelay !== false && hasRelay,
+    turnConfigured: hasRelay,
+    ttl: creds && creds.ttl ? creds.ttl : null
   });
 });
 
-// Helper to extract hostname from a URL string.
-function _extractHost(url) {
-  try {
-    return new URL(url).hostname;
-  } catch (_) {
-    return '';
+function turnCredentials(userId) {
+  if (config.voice.secret) {
+    const ttl = Math.max(600, config.voice.credentialTtlSec || 86400);
+    const username = `${Math.floor(Date.now() / 1000) + ttl}:${userId}`;
+    const credential = crypto.createHmac('sha1', config.voice.secret).update(username).digest('base64');
+    return { username, credential, ttl };
   }
+  if (config.voice.username && config.voice.password) {
+    return { username: config.voice.username, credential: config.voice.password, ttl: null };
+  }
+  return null;
 }
