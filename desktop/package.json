@@ -1,6 +1,6 @@
 {
   "name": "orblood-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ORBLOOD desktop app — Electron shell that connects to a remote ORBLOOD server.",
   "private": true,
   "main": "src/main.cjs",
@@ -27,6 +27,8 @@
     "files": [
       "src/**/*",
       "renderer/**/*",
+      "build/icon.png",
+      "build/tray.png",
       "package.json"
     ],
     "directories": {
@@ -57,7 +59,10 @@
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Orblood uses the microphone for voice channels."
+      }
     },
     "linux": {
       "target": [
@@ -65,7 +70,8 @@
         { "target": "deb", "arch": ["x64"] }
       ],
       "icon": "build/icon.png",
-      "category": "Network"
+      "category": "Network",
+      "maintainer": "Orblood <noreply@orblood.ir>"
     },
     "publish": null
   }

@@ -140,7 +140,7 @@
 
     <div class="row">
       <label for="url">SERVER URL</label>
-      <input type="url" id="url" placeholder="https://orblood.example.com" autocomplete="off" />
+      <input type="url" id="url" placeholder="https://orblood.ir" value="https://orblood.ir" autocomplete="off" />
     </div>
 
     <button class="connect" id="connect">CONNECT</button>
@@ -183,8 +183,7 @@
           $btn.disabled = false;
           $btn.textContent = 'RETRY';
         }
-        // On success the main process will navigate the window away from
-        // this page, so we don't need to do anything else here.
+        // On success the main process navigates the window to the server.
       } catch (e) {
         showErr(String(e && e.message || e));
         $btn.disabled = false;
@@ -193,7 +192,7 @@
     });
 
     $docs.addEventListener('click', () => {
-      window.orblood.openExternal('https://github.com/DiyakoMk/meeting');
+      window.orblood.openExternal('https://github.com/pvwvuow/orb-lood/blob/main/INSTALL.md');
     });
 
     function showErr(msg) { $err.textContent = msg; $err.classList.add('show'); }

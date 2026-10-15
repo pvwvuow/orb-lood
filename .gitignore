@@ -1,11 +1,27 @@
+# Secrets — never commit
+.env
+*.env
+!*.env.example
+!.env.docker.example
+server/.env
+secrets.env
+
 # Frontend
 public/*.bak
 
 # Backend
 server/node_modules/
-server/.env
 server/uploads/*
 !server/uploads/.gitkeep
+
+# Electron / desktop builds
+/node_modules/
+/dist-electron/
+desktop/node_modules/
+desktop/dist/
+desktop/build/*
+!desktop/build/icon.svg
+!desktop/build/entitlements.mac.plist
 
 # OS / editors
 .DS_Store

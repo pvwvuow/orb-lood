@@ -6,36 +6,27 @@ export const healthRouter = Router();
 
 const _bootedAt = Date.now();
 
-// Lightweight liveness probe used by:
-//   - nginx upstream health checks
-//   - /voice-debug.html (the in-app voice diagnostics page)
-//   - the install/diagnose scripts
-//
-// Returns:
-//   { ok, db, uptime, publicOrigin, voice: { hasTurn, forceRelay } }
-//
-// Note: we DO NOT leak TURN credentials here — only flags that say whether
-// the operator configured a TURN server and whether forceRelay is on. The
-// credentials still come from the auth-gated /voice/config endpoint.
+// Lightweight liveness probe used by nginx, /voice-debug.html and the
+// install/diagnose scripts. Public, so it only returns flags: no DB error
+// text, no credentials.
 healthRouter.get('/healthz', async (_req, res) => {
   let dbOk = false;
-  let dbDetail = null;
   try { await pingDb(); dbOk = true; }
-  catch (e) { dbDetail = String(e && e.message); }
+  catch (e) { console.warn('[healthz] db ping failed:', e && e.message); }
   const uptimeSec = Math.round((Date.now() - _bootedAt) / 1000);
-  const payload = {
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(dbOk ? 200 : 503).json({
     ok: dbOk,
     db: dbOk ? 'up' : 'down',
-    dbDetail,
     uptime: uptimeSec,
     publicOrigin: config.publicOrigin,
     voice: {
-      hasTurn:    !!(config.voice.urls && config.voice.urls.length),
+      hasTurn:     !!(config.voice.urls && config.voice.urls.length),
       hasSelfHost: !!(config.voice.selfHost),
-      hasUsername: !!(config.voice.username),
-      hasPassword: !!(config.voice.password),
+      authMode:    config.voice.secret ? 'rest-secret' : (config.voice.password ? 'static' : 'none'),
+      hasUsername: !!(config.voice.secret || config.voice.username),
+      hasPassword: !!(config.voice.secret || config.voice.password),
       forceRelay:  config.voice.forceRelay !== false
     }
-  };
-  res.status(dbOk ? 200 : 503).json(payload);
+  });
 });

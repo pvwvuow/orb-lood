@@ -1,22 +1,17 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { pool, q, one } from '../db.js';
+import { q, one } from '../db.js';
 import { requireAuth } from '../auth/middleware.js';
 import { areFriends, isBlocked } from '../lib/access.js';
+import { sanitizePayload } from '../lib/sanitize.js';
 import { parseOr400 } from '../validators.js';
-import { emitNewDm, emitDmDeleted, emitDmCleared, emitDmRead } from '../realtime/events.js';
+import { emitNewDm, emitDmDeleted, emitDmRead } from '../realtime/events.js';
 import { sendToUser } from '../realtime/ws.js';
 
 export const dmsRouter = Router();
 dmsRouter.use(requireAuth);
 
-// Locale-independent day key (YYYY-MM-DD) shared with the renderer. Bubbles
-// from the same calendar day must hash to the same key so the divider only
-// renders once. The client maps "today" / "yesterday" to friendly labels
-// at render time; raw dates older than yesterday come through as the key
-// itself, which the client also pretty-prints. Keeping the math here
-// instead of `toLocaleDateString` avoids the "node prints 5/8/2026 but
-// the renderer prints 8/5/2026" drift we hit in the previous fix.
+// Locale-independent day key (YYYY-MM-DD) shared with the renderer.
 function dayKey(d) {
   const dt = (d instanceof Date) ? d : new Date(d);
   const y = dt.getFullYear();
@@ -25,76 +20,73 @@ function dayKey(d) {
   return y + '-' + m + '-' + dd;
 }
 
-// Resolve "peerKey" (a handle without the @, OR the literal "saved") into the
-// thread row used as the storage key. Creates the thread on first message.
-async function resolveThread(peerKey, me) {
-  if (peerKey === 'saved') {
-    let row = await one('SELECT * FROM dm_threads WHERE user_a = ? AND is_saved = 1', [me.id]);
-    if (!row) {
-      const r = await q('INSERT INTO dm_threads (user_a, user_b, is_saved) VALUES (?, ?, 1)', [me.id, me.id]);
-      row = await one('SELECT * FROM dm_threads WHERE id = ?', [r.insertId]);
-    }
-    return { thread: row, peer: null };
-  }
-  const peer = await one('SELECT * FROM users WHERE handle = ? LIMIT 1', [peerKey]);
-  if (!peer) return { thread: null, peer: null };
-  // If the peer key resolves to ourselves (e.g. someone DMing their own
-  // handle), route into the Saved Messages thread instead of trying to
-  // create a duplicate (user_a, user_b) row.
-  if (peer.id === me.id) {
-    let row = await one('SELECT * FROM dm_threads WHERE user_a = ? AND is_saved = 1', [me.id]);
-    if (!row) {
-      const r = await q('INSERT INTO dm_threads (user_a, user_b, is_saved) VALUES (?, ?, 1)', [me.id, me.id]);
-      row = await one('SELECT * FROM dm_threads WHERE id = ?', [r.insertId]);
-    }
-    return { thread: row, peer: null };
-  }
-  // Threads are stored with min(uid) as user_a so we don't need two rows.
-  const a = Math.min(me.id, peer.id), b = Math.max(me.id, peer.id);
-  let row = await one('SELECT * FROM dm_threads WHERE user_a = ? AND user_b = ? AND is_saved = 0', [a, b]);
-  if (!row) {
-    const r = await q('INSERT INTO dm_threads (user_a, user_b, is_saved) VALUES (?, ?, 0)', [a, b]);
-    row = await one('SELECT * FROM dm_threads WHERE id = ?', [r.insertId]);
-  }
-  return { thread: row, peer };
+// Get-or-create a thread row atomically. Two parallel first messages used
+// to race (SELECT, then INSERT twice) and one of them hit a duplicate-key
+// 500. INSERT IGNORE + SELECT is safe under concurrency thanks to the
+// uniq_pair (user_a, user_b) key.
+async function getOrCreateThread(a, b, isSaved) {
+  await q('INSERT IGNORE INTO dm_threads (user_a, user_b, is_saved) VALUES (?, ?, ?)', [a, b, isSaved ? 1 : 0]);
+  return one('SELECT * FROM dm_threads WHERE user_a = ? AND user_b = ?', [a, b]);
 }
 
+// Resolve "peerKey" (a handle without the @, OR the literal "saved") into the
+// thread row used as the storage key.
+async function resolveThread(peerKey, me) {
+  const key = String(peerKey || '').replace(/^@/, '').toLowerCase();
+  if (key === 'saved') {
+    return { thread: await getOrCreateThread(me.id, me.id, true), peer: null };
+  }
+  const peer = await one('SELECT * FROM users WHERE handle = ? LIMIT 1', [key]);
+  if (!peer) return { thread: null, peer: null };
+  // DMing your own handle routes into Saved Messages.
+  if (String(peer.id) === String(me.id)) {
+    return { thread: await getOrCreateThread(me.id, me.id, true), peer: null };
+  }
+  // Threads are stored with min(uid) as user_a so we don't need two rows.
+  const a = Math.min(Number(me.id), Number(peer.id)), b = Math.max(Number(me.id), Number(peer.id));
+  return { thread: await getOrCreateThread(a, b, false), peer };
+}
+
+const toIso = d => ((d instanceof Date) ? d : new Date(d)).toISOString();
+
+// GET returns the NEWEST page (default 500) in chronological order.
+// Older pages: ?before=<message id>; `hasMore` says whether more exist.
+// (It used to return the OLDEST 500, so long chats lost their newest
+// messages after a reload.)
 dmsRouter.get('/:peerKey', async (req, res, next) => {
   try {
-    const { thread, peer } = await resolveThread(req.params.peerKey, req.user);
+    const { thread } = await resolveThread(req.params.peerKey, req.user);
     if (!thread) return res.status(404).json({ error: 'peer_not_found' });
-    // History is always visible to both parties, regardless of who blocked
-    // whom. Composing is the only thing that's gated. We still return a
-    // blocked flag so the client can surface the right banner state.
-    // We also honour dm_thread_hidden: if the caller previously cleared
-    // this thread, only show messages with id > last_hidden_id (i.e. only
-    // what arrived after they nuked their copy).
+    // History is visible to both parties regardless of blocks; composing is
+    // what's gated. Honour dm_thread_hidden (one-sided clear).
     const hiddenRow = await one(
       'SELECT last_hidden_id FROM dm_thread_hidden WHERE user_id = ? AND thread_id = ?',
       [req.user.id, thread.id]);
     const hiddenCutoff = hiddenRow ? Number(hiddenRow.last_hidden_id) || 0 : 0;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 500, 1), 500);
+    const before = /^\d+$/.test(String(req.query.before || '')) ? String(req.query.before) : null;
     const rows = await q(
-      `SELECT m.*, u.handle AS sender_handle FROM dm_messages m
-         JOIN users u ON u.id = m.sender_id
-        WHERE m.thread_id = ? AND m.id > ? ORDER BY m.created_at ASC LIMIT 500`,
-      [thread.id, hiddenCutoff]);
-    const myId = req.user.id;
+      `SELECT * FROM (
+         SELECT m.*, u.handle AS sender_handle FROM dm_messages m
+           JOIN users u ON u.id = m.sender_id
+          WHERE m.thread_id = ? AND m.id > ? ${before ? 'AND m.id < ?' : ''}
+          ORDER BY m.id DESC
+          LIMIT ${limit + 1}
+       ) page ORDER BY page.id ASC`,
+      before ? [thread.id, hiddenCutoff, before] : [thread.id, hiddenCutoff]);
+    const hasMore = rows.length > limit;
+    const pageRows = hasMore ? rows.slice(1) : rows;
+    const myId = String(req.user.id);
     res.json({
-      messages: rows.map(r => {
-        // Send the raw timestamp so the renderer can format it in the
-        // user's local timezone. The legacy `time` field stays for older
-        // clients but it's just an ISO string on the wire now; the
-        // browser converts to "HH:MM" with todayDayLabel-style helpers.
-        const created = (r.created_at instanceof Date)
-          ? r.created_at.toISOString()
-          : new Date(r.created_at).toISOString();
+      hasMore,
+      messages: pageRows.map(r => {
+        const created = toIso(r.created_at);
         return {
           id: r.id,
-          sender: r.sender_id === myId ? 'me' : 'them',
+          sender: String(r.sender_id) === myId ? 'me' : 'them',
           text: r.body || '',
-          createdAt: created,                  // canonical, ISO + UTC
-          time:      created,                  // legacy alias; renderer
-                                               // formats both the same way
+          createdAt: created,
+          time:      created,
           day:       dayKey(r.created_at),
           status:    r.status,
           edited:    !!r.edited,
@@ -123,20 +115,16 @@ dmsRouter.post('/:peerKey', async (req, res, next) => {
         return res.status(403).json({ error: 'friends_only' });
       }
     }
+    const payload = body.payload ? sanitizePayload(body.payload) : null;
     const result = await q(
       `INSERT INTO dm_messages (thread_id, sender_id, body, payload_json)
        VALUES (?, ?, ?, ?)`,
-      [thread.id, req.user.id, body.text || '', body.payload ? JSON.stringify(body.payload) : null]
+      [thread.id, req.user.id, body.text || '', payload ? JSON.stringify(payload) : null]
     );
     await q('UPDATE dm_threads SET last_msg_at = CURRENT_TIMESTAMP WHERE id = ?', [thread.id]);
-    // Use the same instant we just stamped on the row so the optimistic
-    // bubble and the persisted bubble share the exact same wall-clock
-    // value. We send ISO + UTC down to the renderer; it formats with the
-    // user's local timezone, which fixes the "time changes after a
-    // reload" report (server was stamping its UTC clock).
     const created = new Date().toISOString();
     const day  = dayKey(new Date());
-    const responsePayload = {
+    res.status(201).json({
       message: {
         id: result.insertId,
         sender: 'me',
@@ -145,12 +133,11 @@ dmsRouter.post('/:peerKey', async (req, res, next) => {
         time:      created,
         day,
         status: 'sent',
-        payload: body.payload || null
+        payload
       }
-    };
-    res.status(201).json(responsePayload);
+    });
     // Push to the peer in realtime. They see `sender:'them'` for the same row.
-    if (peer && peer.id !== req.user.id){
+    if (peer && String(peer.id) !== String(req.user.id)){
       emitNewDm(req.user.id, peer.id, {
         id: result.insertId,
         sender: 'them',
@@ -158,16 +145,16 @@ dmsRouter.post('/:peerKey', async (req, res, next) => {
         createdAt: created,
         time:      created,
         day,
-        payload: body.payload || null,
+        payload,
         peerHandle: req.user.handle ? '@' + req.user.handle : null,
-        peerName: req.user.name
+        peerName: req.user.name,
+        peerId: String(req.user.id)
       });
     }
   } catch (e) { next(e); }
 });
 
-// Pin / unpin a single message in a DM thread. Pin state is shared
-// between both peers (one row per thread). Pass {messageId: null} to clear.
+// Pin / unpin a single message in a DM thread. Pass {messageId: null} to clear.
 const pinSchema = z.object({ messageId: z.union([z.string(), z.number()]).nullable().optional() });
 dmsRouter.post('/:peerKey/pin', async (req, res, next) => {
   try {
@@ -178,7 +165,7 @@ dmsRouter.post('/:peerKey/pin', async (req, res, next) => {
       await q('DELETE FROM dm_pinned WHERE thread_id = ?', [thread.id]);
       res.json({ ok: true, pinnedMessageId: null });
       sendToUser(thread.user_a, { type: 'dm:pin', threadId: thread.id, messageId: null });
-      sendToUser(thread.user_b, { type: 'dm:pin', threadId: thread.id, messageId: null });
+      if (thread.user_b !== thread.user_a) sendToUser(thread.user_b, { type: 'dm:pin', threadId: thread.id, messageId: null });
       return;
     }
     const mid = Number(body.messageId);
@@ -190,13 +177,11 @@ dmsRouter.post('/:peerKey/pin', async (req, res, next) => {
       [thread.id, mid]);
     res.json({ ok: true, pinnedMessageId: mid });
     sendToUser(thread.user_a, { type: 'dm:pin', threadId: thread.id, messageId: mid });
-    sendToUser(thread.user_b, { type: 'dm:pin', threadId: thread.id, messageId: mid });
+    if (thread.user_b !== thread.user_a) sendToUser(thread.user_b, { type: 'dm:pin', threadId: thread.id, messageId: mid });
   } catch (e) { next(e); }
 });
 
-// Mark every message in this thread as read (up to current max id) for the
-// caller. Snapshot's unreadDm uses dm_read_state.last_read_id to compute
-// "X new messages since you last looked".
+// Mark every message in this thread as read for the caller.
 dmsRouter.post('/:peerKey/read', async (req, res, next) => {
   try {
     const { thread, peer } = await resolveThread(req.params.peerKey, req.user);
@@ -207,9 +192,13 @@ dmsRouter.post('/:peerKey/read', async (req, res, next) => {
       `INSERT INTO dm_read_state (user_id, thread_id, last_read_id) VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE last_read_id = GREATEST(last_read_id, VALUES(last_read_id)), updated_at = CURRENT_TIMESTAMP`,
       [req.user.id, thread.id, maxId]);
+    // Also flip the stored status so ticks survive a reload.
+    if (maxId > 0) {
+      await q(`UPDATE dm_messages SET status = 'read'
+                WHERE thread_id = ? AND sender_id != ? AND id <= ? AND status != 'read'`,
+        [thread.id, req.user.id, maxId]);
+    }
     res.json({ ok: true, lastReadId: maxId });
-    // Tell the peer their delivered ticks just flipped to read ticks. Skip
-    // for Saved Messages (peer is the same user) — there's nothing to flip.
     if (peer && peer.id && String(peer.id) !== String(req.user.id) && maxId > 0){
       emitDmRead(req.user.id, peer.id, maxId);
     }
@@ -221,15 +210,13 @@ dmsRouter.post('/:peerKey/clear', async (req, res, next) => {
     const { thread } = await resolveThread(req.params.peerKey, req.user);
     if (!thread) return res.status(404).json({ error: 'peer_not_found' });
     // One-sided delete: hide every message currently in the thread for the
-    // caller only. The peer keeps their full history. New messages (id >
-    // last_hidden_id) will surface the thread again on both sides.
+    // caller only. The peer keeps their full history.
     const top = await one('SELECT MAX(id) AS m FROM dm_messages WHERE thread_id = ?', [thread.id]);
     const maxId = (top && top.m) ? Number(top.m) : 0;
     await q(
       `INSERT INTO dm_thread_hidden (user_id, thread_id, last_hidden_id) VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE last_hidden_id = GREATEST(last_hidden_id, VALUES(last_hidden_id)), updated_at = CURRENT_TIMESTAMP`,
       [req.user.id, thread.id, maxId]);
-    // Bring the read marker up to maxId too — there's nothing left to read.
     await q(
       `INSERT INTO dm_read_state (user_id, thread_id, last_read_id) VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE last_read_id = GREATEST(last_read_id, VALUES(last_read_id)), updated_at = CURRENT_TIMESTAMP`,
@@ -244,12 +231,10 @@ dmsRouter.delete('/:peerKey/:mid', async (req, res, next) => {
     if (!thread) return res.status(404).json({ error: 'peer_not_found' });
     const msg = await one('SELECT * FROM dm_messages WHERE id = ? AND thread_id = ?', [req.params.mid, thread.id]);
     if (!msg) return res.status(404).json({ error: 'not_found' });
-    if (msg.sender_id !== req.user.id) return res.status(403).json({ error: 'forbidden' });
-    await q('UPDATE dm_messages SET deleted = 1, body = NULL WHERE id = ?', [req.params.mid]);
+    if (String(msg.sender_id) !== String(req.user.id)) return res.status(403).json({ error: 'forbidden' });
+    await q('UPDATE dm_messages SET deleted = 1, body = NULL, payload_json = NULL WHERE id = ? AND thread_id = ?', [req.params.mid, thread.id]);
     res.json({ ok: true });
-    // Push the soft-delete to the peer so their bubble flips to
-    // "Message deleted" without reloading the thread.
-    if (peer && peer.id !== req.user.id) emitDmDeleted(req.user.id, peer.id, Number(req.params.mid));
+    if (peer && String(peer.id) !== String(req.user.id)) emitDmDeleted(req.user.id, peer.id, Number(req.params.mid));
   } catch (e) { next(e); }
 });
 
@@ -262,11 +247,11 @@ dmsRouter.patch('/:peerKey/:mid', async (req, res, next) => {
     if (!thread) return res.status(404).json({ error: 'peer_not_found' });
     const msg = await one('SELECT * FROM dm_messages WHERE id = ? AND thread_id = ?', [req.params.mid, thread.id]);
     if (!msg) return res.status(404).json({ error: 'not_found' });
-    if (msg.sender_id !== req.user.id) return res.status(403).json({ error: 'forbidden' });
-    await q('UPDATE dm_messages SET body = ?, edited = 1 WHERE id = ?', [body.text, req.params.mid]);
+    if (String(msg.sender_id) !== String(req.user.id)) return res.status(403).json({ error: 'forbidden' });
+    if (msg.deleted) return res.status(409).json({ error: 'message_deleted' });
+    await q('UPDATE dm_messages SET body = ?, edited = 1 WHERE id = ? AND thread_id = ?', [body.text, req.params.mid, thread.id]);
     res.json({ ok: true });
-    // Push the new body to the peer so their bubble updates without reload.
-    if (peer && peer.id !== req.user.id) {
+    if (peer && String(peer.id) !== String(req.user.id)) {
       sendToUser(peer.id, { type: 'dm:edited', from: String(req.user.id), messageId: Number(req.params.mid), text: body.text });
     }
   } catch (e) { next(e); }

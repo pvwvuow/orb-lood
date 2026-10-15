@@ -1,15 +1,17 @@
 /* ORBLOOD service worker.
  *
- * Two strategies:
- *   - /api/*, /ws, websocket, and uploads go straight to network (we
- *     never want stale chat data or token-protected content cached).
- *   - everything else (HTML/CSS/JS/fonts/icons) uses stale-while-
- *     revalidate so the PWA boots instantly offline but still picks up
- *     a fresh build when the network has one. The cache name is
- *     bumped any time the build stamp in app.js changes; clients pick
- *     up the new bundle automatically on next load.
+ *   - /api/*, /ws, uploads and health checks are never touched (always
+ *     live; no stale chat data, no cached tokens or TURN credentials).
+ *   - The app shell (HTML / JS / CSS / manifest) is NETWORK-FIRST: online
+ *     users always run the newest deploy, the cache is only an offline
+ *     fallback. (Stale-while-revalidate used to keep old voice code alive
+ *     for a whole extra load after every deploy.)
+ *   - Fonts / icons / images are cache-first (they rarely change).
+ *
+ * deploy.sh rewrites CACHE_NAME on every deploy, which also purges old
+ * caches on activate.
  */
-const CACHE_NAME = 'orblood-shell-v7-20260516d';
+const CACHE_NAME = 'orblood-shell-v8-20261015';
 const SHELL_URLS = [
   '/',
   '/index.html',
@@ -20,7 +22,7 @@ const SHELL_URLS = [
 
 self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(c => c.addAll(SHELL_URLS).catch(()=>null))
+    caches.open(CACHE_NAME).then(c => c.addAll(SHELL_URLS).catch(() => null))
       .then(() => self.skipWaiting())
   );
 });
@@ -33,45 +35,63 @@ self.addEventListener('activate', event => {
   );
 });
 
-function isApiRequest(url) {
+function isLiveRequest(url) {
   return url.pathname.startsWith('/api/')
       || url.pathname.startsWith('/ws')
       || url.pathname.startsWith('/uploads/')
-      || url.pathname.endsWith('/healthz');
+      || url.pathname.endsWith('/healthz')
+      || url.pathname === '/voice-debug.html'
+      || url.pathname === '/clear-cache.html';
+}
+
+function isShell(req, url) {
+  return req.mode === 'navigate'
+      || /\.(html|js|css|webmanifest)$/i.test(url.pathname)
+      || url.pathname === '/';
+}
+
+// Cache key without the ?v= build stamp, so the offline copy is found no
+// matter which stamp the HTML referenced.
+function keyFor(url) {
+  return url.origin + url.pathname;
+}
+
+async function networkFirst(req, url) {
+  const cache = await caches.open(CACHE_NAME);
+  try {
+    const res = await fetch(req, { cache: 'no-store' });
+    if (res && res.ok && res.type === 'basic') cache.put(keyFor(url), res.clone());
+    return res;
+  } catch (_) {
+    const hit = await cache.match(keyFor(url), { ignoreSearch: true })
+             || (req.mode === 'navigate' ? await cache.match('/index.html', { ignoreSearch: true }) : null);
+    return hit || new Response('', { status: 504, statusText: 'offline' });
+  }
+}
+
+async function cacheFirst(req, url) {
+  const cache = await caches.open(CACHE_NAME);
+  const hit = await cache.match(req);
+  if (hit) return hit;
+  try {
+    const res = await fetch(req);
+    if (res && res.ok && res.type === 'basic') cache.put(req, res.clone());
+    return res;
+  } catch (_) {
+    return new Response('', { status: 504, statusText: 'offline' });
+  }
 }
 
 self.addEventListener('fetch', event => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-
-  // Same-origin only. We don't want to mediate cross-origin fetches
-  // (cloudflared tunnel, font CDNs, image hosts).
+  // Same-origin only; never mediate cross-origin fetches.
   if (url.origin !== self.location.origin) return;
-
-  if (isApiRequest(url)) {
-    // Bypass cache entirely; the websocket and REST API must talk live.
-    return;
-  }
-
-  // Stale-while-revalidate for the static shell.
-  event.respondWith(
-    caches.open(CACHE_NAME).then(async cache => {
-      const cached = await cache.match(req);
-      const networkPromise = fetch(req).then(res => {
-        if (res && res.ok) cache.put(req, res.clone());
-        return res;
-      }).catch(() => null);
-      // Prefer cached response so PWA opens fast / offline; the network
-      // promise refreshes the cache in the background.
-      return cached || networkPromise || new Response('', { status: 504 });
-    })
-  );
+  if (isLiveRequest(url)) return;
+  event.respondWith(isShell(req, url) ? networkFirst(req, url) : cacheFirst(req, url));
 });
 
-// Allow the page to ask the SW to skip-waiting (used after a manual
-// "update available" prompt in the future). Right now app.js doesn't
-// send this, but the hook is cheap and useful.
 self.addEventListener('message', e => {
   if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
