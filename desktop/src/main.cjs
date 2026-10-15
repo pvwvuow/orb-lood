@@ -1,19 +1,19 @@
 // Orblood desktop — Electron main process.
 //
-// This shell loads the public/ frontend that ships with the server repo and
-// points it at a remote backend chosen by the user on first launch (and
-// editable later from the in-app server picker). All audio/voice traffic
-// stays peer-to-peer via WebRTC; the desktop app is just a privileged
-// browser wrapper around the same /public/index.html that the server
-// already hosts.
+// Loads the frontend from a backend the user picks on first launch (editable
+// later from the tray). Security model:
+//   - sandboxed renderer, context isolation, no node integration
+//   - the window may only navigate inside the chosen backend origin
+//     (plus the bundled setup page / local error page)
+//   - microphone & notifications are granted ONLY to that origin
+//   - IPC only answers the setup page, the error page and the backend
 
-const { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage, dialog, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Tray, Menu, nativeImage, session } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const { pathToFileURL } = require('node:url');
 
 // --- Single-instance lock --------------------------------------------------
-// If the user double-clicks the icon, focus the existing window instead of
-// spawning a second copy that would fight over notifications and state.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -21,8 +21,6 @@ if (!gotLock) {
 }
 
 // --- Persistent settings ---------------------------------------------------
-// Tiny JSON file in the app's userData folder. We deliberately avoid pulling
-// electron-store as a dep so the bundle stays minimal.
 const userDataDir = app.getPath('userData');
 const settingsPath = path.join(userDataDir, 'orblood-settings.json');
 
@@ -36,6 +34,49 @@ function writeSettings(patch) {
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.writeFileSync(settingsPath, JSON.stringify(next, null, 2));
   return next;
+}
+
+const SETUP_FILE = path.join(__dirname, '..', 'renderer', 'setup.html');
+const SETUP_URL = pathToFileURL(SETUP_FILE).toString();
+
+function backendOrigin() {
+  const b = readSettings().backendUrl;
+  if (!b) return null;
+  try { return new URL(b).origin; } catch { return null; }
+}
+
+function isBackendUrl(raw) {
+  const origin = backendOrigin();
+  if (!origin) return false;
+  try { return new URL(raw).origin === origin; } catch { return false; }
+}
+
+function isLocalPage(raw) {
+  return typeof raw === 'string' && (raw.split('#')[0].split('?')[0] === SETUP_URL || raw.startsWith('data:text/html'));
+}
+
+function openExternalSafe(raw) {
+  try {
+    const u = new URL(raw);
+    if (u.protocol === 'https:' || u.protocol === 'http:') shell.openExternal(u.toString()).catch(() => {});
+  } catch { /* ignore */ }
+}
+
+const ALLOWED_PERMISSIONS = new Set(['media', 'notifications', 'clipboard-sanitized-write', 'fullscreen']);
+
+function lockDownSession() {
+  const ses = session.defaultSession;
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+    const origin = (details && details.requestingUrl) || wc.getURL();
+    if (permission === 'media' && details && Array.isArray(details.mediaTypes) && details.mediaTypes.includes('video')) {
+      // Voice only: no camera.
+      return callback(false);
+    }
+    callback(ALLOWED_PERMISSIONS.has(permission) && isBackendUrl(origin));
+  });
+  ses.setPermissionCheckHandler((_wc, permission, requestingOrigin) => {
+    return ALLOWED_PERMISSIONS.has(permission) && isBackendUrl(requestingOrigin);
+  });
 }
 
 // --- Window creation -------------------------------------------------------
@@ -63,18 +104,14 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
-      // We need WebRTC to reach mic + camera, plus the renderer talks to a
-      // remote HTTPS backend that lives on a different origin.
-      webSecurity: true
+      sandbox: true,
+      webSecurity: true,
+      spellcheck: false
     }
   });
 
-  mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
-  });
+  mainWindow.once('ready-to-show', () => mainWindow.show());
 
-  // Persist window bounds so the next launch reopens where the user left it.
   const saveBounds = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (mainWindow.isFullScreen() || mainWindow.isMinimized()) return;
@@ -83,9 +120,7 @@ function createWindow() {
   mainWindow.on('resize', saveBounds);
   mainWindow.on('move', saveBounds);
 
-  // Closing the window should hide to tray on Windows/Linux instead of
-  // quitting the app, so notifications and voice stay alive in the
-  // background. Cmd+Q on macOS still quits.
+  // Close → hide to tray on Windows/Linux so voice stays alive.
   mainWindow.on('close', e => {
     if (isQuitting) return;
     if (process.platform !== 'darwin' && tray) {
@@ -94,51 +129,37 @@ function createWindow() {
     }
   });
 
-  // External links should open in the user's default browser, not in our
-  // Electron window. (Profile sites, support docs, etc.)
+  // New windows never open inside the app; http(s) links go to the browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) {
-      shell.openExternal(url);
-      return { action: 'deny' };
-    }
+    openExternalSafe(url);
     return { action: 'deny' };
   });
 
-  // Auto-grant mic permission for the configured backend origin so WebRTC
-  // can do its thing without a per-call prompt. We still respect deny on
-  // every other origin.
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    if (permission === 'media' || permission === 'mediaKeySystem') {
-      callback(true);
-      return;
-    }
-    callback(false);
-  });
+  // The window itself may not wander off to another site.
+  const guardNav = (event, url) => {
+    if (isBackendUrl(url) || isLocalPage(url)) return;
+    event.preventDefault();
+    openExternalSafe(url);
+  };
+  mainWindow.webContents.on('will-navigate', guardNav);
+  mainWindow.webContents.on('will-redirect', guardNav);
 
   loadFrontend();
 }
 
 function loadFrontend() {
-  const settings = readSettings();
-  const backend = (settings.backendUrl || '').replace(/\/$/, '');
+  const backend = (readSettings().backendUrl || '').replace(/\/$/, '');
   if (!backend) {
-    // First launch — show the bundled server picker so the user can paste
-    // their VPS URL once and never see this screen again.
-    mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'setup.html'));
+    mainWindow.loadFile(SETUP_FILE);
     return;
   }
-  // Treat the configured URL as the canonical app origin: the renderer
-  // loads `<backend>/` directly, which already serves the static frontend
-  // from server/public via Express. Same-origin = simpler CORS, working
-  // cookies, and the WebSocket upgrade path the app already expects.
-  mainWindow.loadURL(backend + '/?desktop=1').catch(err => {
-    showLoadError(backend, err);
-  });
+  mainWindow.loadURL(backend + '/?desktop=1').catch(err => showLoadError(backend, err));
 }
 
 function showLoadError(url, err) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Orblood</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
     <style>body{font-family:system-ui,-apple-system,sans-serif;background:#020103;color:#f8f0f0;padding:48px;line-height:1.55}
       h1{color:#b91c4a;font-size:1.4rem}
       code{background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px}
@@ -150,7 +171,7 @@ function showLoadError(url, err) {
     <button id="retry">Retry</button>
     <button id="reset" style="background:transparent;color:#f8f0f0;border:1px solid rgba(255,255,255,0.15);margin-left:10px">Change server</button>
     <script>
-      document.getElementById('retry').onclick = () => location.reload();
+      document.getElementById('retry').onclick = () => window.orblood.reload();
       document.getElementById('reset').onclick = () => window.orblood.resetBackend();
     </script>
     </body></html>`;
@@ -162,46 +183,67 @@ function escapeHtml(s) {
 }
 
 // --- IPC -------------------------------------------------------------------
-ipcMain.handle('orblood:getSettings', () => readSettings());
+// Only our own pages may call into the main process.
+function senderUrl(evt) {
+  return (evt.senderFrame && evt.senderFrame.url) || '';
+}
+function fromTrusted(evt) {
+  const u = senderUrl(evt);
+  return isLocalPage(u) || isBackendUrl(u);
+}
 
-ipcMain.handle('orblood:setBackendUrl', async (_evt, url) => {
+ipcMain.handle('orblood:getSettings', (evt) => {
+  if (!fromTrusted(evt)) return {};
+  const s = readSettings();
+  return { backendUrl: s.backendUrl || null, lastBackendUrl: s.lastBackendUrl || null };
+});
+
+ipcMain.handle('orblood:setBackendUrl', async (evt, url) => {
+  if (!isLocalPage(senderUrl(evt))) return { ok: false, error: 'not allowed' };
   const cleaned = String(url || '').trim().replace(/\/+$/, '');
-  if (!cleaned || !/^https?:\/\//i.test(cleaned)) {
-    return { ok: false, error: 'Enter a full URL like https://orblood.example.com' };
+  let parsed;
+  try { parsed = new URL(cleaned); } catch { parsed = null; }
+  if (!parsed || !/^https?:$/.test(parsed.protocol)) {
+    return { ok: false, error: 'Enter a full URL like https://orblood.ir' };
   }
-  // Health probe so the user gets immediate feedback if the URL is wrong.
+  if (parsed.protocol === 'http:' && !/^(localhost|127\.0\.0\.1)$/.test(parsed.hostname)) {
+    return { ok: false, error: 'Use https:// (plain http only works for localhost)' };
+  }
   try {
-    const res = await fetch(cleaned + '/api/healthz', { method: 'GET' });
-    if (!res.ok) throw new Error('health check returned ' + res.status);
+    const res = await fetch(parsed.origin + '/api/healthz', { method: 'GET' });
+    if (!res.ok && res.status !== 503) throw new Error('health check returned ' + res.status);
   } catch (e) {
-    return { ok: false, error: 'Could not reach ' + cleaned + ' — ' + (e.message || e) };
+    return { ok: false, error: 'Could not reach ' + parsed.origin + ' — ' + (e.message || e) };
   }
-  // Keep the last-used URL around so the setup screen can pre-fill it the
-  // next time the user "Change server"s — friendlier than forcing a retype.
-  writeSettings({ backendUrl: cleaned, lastBackendUrl: cleaned });
+  writeSettings({ backendUrl: parsed.origin, lastBackendUrl: parsed.origin });
   loadFrontend();
   return { ok: true };
 });
 
-ipcMain.handle('orblood:resetBackend', () => {
+ipcMain.handle('orblood:resetBackend', (evt) => {
+  if (!fromTrusted(evt)) return { ok: false };
   writeSettings({ backendUrl: null });
   loadFrontend();
   return { ok: true };
 });
 
-ipcMain.handle('orblood:openExternal', (_evt, url) => {
-  if (typeof url === 'string' && /^https?:\/\//.test(url)) shell.openExternal(url);
+ipcMain.handle('orblood:reload', (evt) => {
+  if (!fromTrusted(evt)) return { ok: false };
+  loadFrontend();
+  return { ok: true };
+});
+
+ipcMain.handle('orblood:openExternal', (evt, url) => {
+  if (fromTrusted(evt) && typeof url === 'string') openExternalSafe(url);
 });
 
 // --- Tray ------------------------------------------------------------------
 function createTray() {
-  if (process.platform === 'darwin') return; // macOS apps stay in the dock.
+  if (process.platform === 'darwin') return;
   const iconPath = path.join(__dirname, '..', 'build', 'tray.png');
   let img;
   try {
-    img = fs.existsSync(iconPath)
-      ? nativeImage.createFromPath(iconPath)
-      : nativeImage.createEmpty();
+    img = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
   } catch { img = nativeImage.createEmpty(); }
   tray = new Tray(img);
   tray.setToolTip('Orblood');
@@ -225,10 +267,14 @@ app.on('second-instance', () => {
   }
 });
 
+app.on('web-contents-created', (_e, contents) => {
+  contents.on('will-attach-webview', (event) => event.preventDefault());
+});
+
 app.whenReady().then(() => {
+  lockDownSession();
   createWindow();
   createTray();
-
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
     else if (mainWindow) mainWindow.show();
@@ -238,9 +284,5 @@ app.whenReady().then(() => {
 app.on('before-quit', () => { isQuitting = true; });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    // Tray keeps the app alive in the background; only quit when the user
-    // explicitly chose "Quit" via the tray menu.
-    if (isQuitting) app.quit();
-  }
+  if (process.platform !== 'darwin' && isQuitting) app.quit();
 });
